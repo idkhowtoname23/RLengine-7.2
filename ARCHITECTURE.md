@@ -1,6 +1,6 @@
 # RLengine 7.2 Architecture and Technical Specifications
 
-This document provides an in-depth, verified technical overview of the architecture, subsystems, and internal design of **RLengine 7.2** (C++23 / DirectX 12 & DirectX 11 / Lua 5.4 / Generational Sparse-Set ECS / Blender-style DCC Editor).
+This document provides an in-depth, verified technical overview of the architecture, subsystems, and internal design of **RLengine 7.2 (Alpha Stage)** (C++23 / DirectX 12 & DirectX 11 / Lua 5.4 / Generational Sparse-Set ECS / Blender-style DCC Editor).
 
 ---
 
