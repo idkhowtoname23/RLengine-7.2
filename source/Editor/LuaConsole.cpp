@@ -97,7 +97,8 @@ namespace RL
         }
 
         ImGui::SetNextWindowSize(ImVec2(800, 460), ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("RLengine 7.2 - In-Game Lua REPL Console [~ or F1]", &m_isOpen))
+        const ImGuiWindowFlags consoleFlags = ImGuiWindowFlags_NoDocking;
+        if (!ImGui::Begin("RLengine 7.2 - In-Game Lua REPL Console [~ or F1]", &m_isOpen, consoleFlags))
         {
             ImGui::End();
             return;

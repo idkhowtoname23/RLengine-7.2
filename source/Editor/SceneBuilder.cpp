@@ -559,6 +559,17 @@ namespace RL
                 ImGui::MenuItem("Timeline", nullptr, &m_showTimeline);
                 ImGui::MenuItem("Status Bar", nullptr, &m_showStatusBar);
                 ImGui::MenuItem("3D Compass Gizmo", nullptr, &m_show3DCompass);
+                ImGui::Separator();
+                if (ImGui::MenuItem("Reset Layout to Default"))
+                {
+                    m_showToolShelf = true;
+                    m_showHierarchy = true;
+                    m_showInspector = true;
+                    m_showTimeline = true;
+                    m_showStatusBar = true;
+                    m_show3DCompass = true;
+                    m_workspace = BlenderWorkspace::Layout;
+                }
                 ImGui::EndMenu();
             }
 
