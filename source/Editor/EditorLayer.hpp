@@ -91,7 +91,7 @@ namespace RL
         Editor::StatsPanel* m_statsPanel = nullptr;
         bool m_isInitialized = false;
         bool m_showDiagnostics = false;
-        bool m_showBlenderPanels = true;
+        bool m_showBlenderPanels = false;
         bool m_dockLayoutInitialized = false;
     };
 }

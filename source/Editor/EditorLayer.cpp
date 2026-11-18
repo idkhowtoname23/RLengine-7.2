@@ -154,52 +154,7 @@ namespace RL
             return;
         }
 
-        const ImGuiID dockspaceId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
-
-        if (!m_dockLayoutInitialized)
-        {
-            m_dockLayoutInitialized = true;
-            ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockspaceId);
-            if (!node || (!node->IsSplitNode() && node->Windows.Size == 0))
-            {
-                ImGui::DockBuilderRemoveNode(dockspaceId);
-                ImGui::DockBuilderAddNode(dockspaceId, static_cast<ImGuiDockNodeFlags>(ImGuiDockNodeFlags_DockSpace) | ImGuiDockNodeFlags_PassthruCentralNode);
-                ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
-                ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
-
-                ImGuiID dockMain = dockspaceId;
-                ImGuiID dockLeft = 0;
-                ImGuiID dockRight = 0;
-                ImGuiID dockBottom = 0;
-                ImGuiID dockLeftBottom = 0;
-
-                ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.20f, &dockLeft, &dockMain);
-                ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.25f, &dockRight, &dockMain);
-                ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.25f, &dockBottom, &dockMain);
-                ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Down, 0.40f, &dockLeftBottom, &dockLeft);
-
-                ImGui::DockBuilderDockWindow("Scene Hierarchy##SH", dockLeft);
-                ImGui::DockBuilderDockWindow("Scene Hierarchy", dockLeft);
-                ImGui::DockBuilderDockWindow("Outliner", dockLeft);
-
-                ImGui::DockBuilderDockWindow("Stats##STATS", dockLeftBottom);
-                ImGui::DockBuilderDockWindow("Stats", dockLeftBottom);
-
-                ImGui::DockBuilderDockWindow("Inspector##INS", dockRight);
-                ImGui::DockBuilderDockWindow("Inspector", dockRight);
-                ImGui::DockBuilderDockWindow("Properties", dockRight);
-
-                ImGui::DockBuilderDockWindow("Content Browser##CB", dockBottom);
-                ImGui::DockBuilderDockWindow("Content Browser", dockBottom);
-                ImGui::DockBuilderDockWindow("RLengine 7.2 - In-Game Lua REPL Console [~ or F1]", dockBottom);
-                ImGui::DockBuilderDockWindow("Lua Console", dockBottom);
-
-                ImGui::DockBuilderDockWindow("Viewport", dockMain);
-                ImGui::DockBuilderDockWindow("Viewport##VP", dockMain);
-
-                ImGui::DockBuilderFinish(dockspaceId);
-            }
-        }
+        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
         m_sceneBuilder.Render(scene, device, timer, renderSystem, textureManager, scriptEngine, m_stressTest);
 

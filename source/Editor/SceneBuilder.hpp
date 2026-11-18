@@ -204,8 +204,8 @@ namespace RL
         ParticleSystem m_particleSystem;
 
         bool m_isOpen = true;
-        bool m_showHierarchy = false;
-        bool m_showInspector = false;
+        bool m_showHierarchy = true;
+        bool m_showInspector = true;
         bool m_showAssetBrowser = true;
         bool m_showViewportSettings = true;
         bool m_showStressTest = true;

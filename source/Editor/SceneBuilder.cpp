@@ -867,7 +867,8 @@ namespace RL
             Draw3DCompassGizmo(scene, XMFLOAT2(compassX, compassY), compassRadius);
         }
 
-        ImGui::SetNextWindowPos(ImVec2(x + 50.0f, y + height + 8.0f), ImGuiCond_Always);
+        const float diagX = m_showToolShelf ? (x + 56.0f) : (x + 14.0f);
+        ImGui::SetNextWindowPos(ImVec2(diagX, y + height + 8.0f), ImGuiCond_Always);
         ImGuiWindowFlags diagFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                      ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs |
                                      ImGuiWindowFlags_NoSavedSettings;
