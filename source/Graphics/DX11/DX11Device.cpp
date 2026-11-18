@@ -1,4 +1,5 @@
 #include "Graphics/DX11/DX11Device.hpp"
+#include "Graphics/RHI/GpuCapabilities.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/Components.hpp"
 #include "Platform/FileSystem/VFS.hpp"
@@ -100,6 +101,13 @@ namespace RL
 
         auto devRes = CreateDeviceAndSwapChain(hwnd, width, height);
         if (!devRes) return devRes;
+
+        m_gpuInfo = RHI::GpuCapabilities::DetectPrimaryGpu();
+        if (m_gpuInfo.name.empty() || m_gpuInfo.name == "Unknown Video Controller")
+        {
+            m_gpuInfo.name = m_gpuDescription;
+        }
+        m_gpuInfo.dedicatedVramBytes = m_dedicatedVramBytes;
 
         if (m_commandBuffer)
         {

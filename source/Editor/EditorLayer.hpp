@@ -2,6 +2,7 @@
 
 #include "Core/Types.hpp"
 #include "Graphics/DX12/DX12Common.hpp"
+#include "Graphics/RHI/RHIInterfaces.hpp"
 #include "Editor/LuaConsole.hpp"
 #include "Editor/SceneBuilder.hpp"
 #include "Scene/StressTest.hpp"
@@ -19,15 +20,22 @@ typedef HWND__* HWND;
 struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
 struct ID3D12DescriptorHeap;
+struct ID3D11Device;
+struct ID3D11DeviceContext;
 
 namespace RL
 {
     class Timer;
-    class DX12Device;
     class Scene;
     class ScriptEngine;
     class RenderSystem;
     class TextureManager;
+
+    enum class EditorBackend
+    {
+        DirectX12,
+        DirectX11
+    };
 
     class EditorLayer
     {
@@ -48,18 +56,25 @@ namespace RL
             DXGI_FORMAT rtvFormat,
             ScriptEngine* scriptEngine = nullptr);
 
+        [[nodiscard]] std::expected<void, std::string> InitializeDX11(
+            HWND hwnd,
+            ID3D11Device* device,
+            ID3D11DeviceContext* context,
+            ScriptEngine* scriptEngine = nullptr);
+
         void Shutdown() noexcept;
 
         void BeginFrame();
         void RenderUI(
             const Timer& timer,
-            const DX12Device& device,
+            const RHI::IRHIDevice& device,
             Scene& scene,
             u32 renderedEntities,
             RenderSystem* renderSystem = nullptr,
             TextureManager* textureManager = nullptr,
             ScriptEngine* scriptEngine = nullptr);
         void EndFrame(ID3D12GraphicsCommandList* cmdList);
+        void EndFrameDX11();
 
         [[nodiscard]] LuaConsole& GetLuaConsole() noexcept { return m_luaConsole; }
         [[nodiscard]] const LuaConsole& GetLuaConsole() const noexcept { return m_luaConsole; }
@@ -74,10 +89,11 @@ namespace RL
         void ToggleBlenderPanels() noexcept { m_showBlenderPanels = !m_showBlenderPanels; }
 
         [[nodiscard]] bool IsInitialized() const noexcept { return m_isInitialized; }
+        [[nodiscard]] EditorBackend GetBackend() const noexcept { return m_backend; }
 
     private:
         void ApplyCyberpunkDarkStyle();
-        void RenderDiagnosticsOverlay(const Timer& timer, const DX12Device& device, const Scene& scene, u32 renderedEntities);
+        void RenderDiagnosticsOverlay(const Timer& timer, const RHI::IRHIDevice& device, const Scene& scene, u32 renderedEntities);
 
     private:
         ComPtr<ID3D12DescriptorHeap> m_srvHeap;
@@ -89,6 +105,7 @@ namespace RL
         Editor::InspectorPanel* m_inspectorPanel = nullptr;
         Editor::ContentBrowserPanel* m_contentBrowserPanel = nullptr;
         Editor::StatsPanel* m_statsPanel = nullptr;
+        EditorBackend m_backend = EditorBackend::DirectX12;
         bool m_isInitialized = false;
         bool m_showDiagnostics = false;
         bool m_showBlenderPanels = false;

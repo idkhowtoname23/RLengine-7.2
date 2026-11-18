@@ -64,5 +64,7 @@ namespace RL::RHI
         virtual void WaitForGPU() = 0;
 
         [[nodiscard]] virtual IRHICommandBuffer* GetActiveCommandBuffer() noexcept = 0;
+        [[nodiscard]] virtual const GpuDeviceInfo& GetGpuInfo() const noexcept = 0;
+        [[nodiscard]] virtual void* GetNativeDevice() const noexcept { return nullptr; }
     };
 }

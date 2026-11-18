@@ -60,7 +60,7 @@ namespace RL
 
     void SceneBuilder::Render(
         Scene& scene,
-        const DX12Device& device,
+        const RHI::IRHIDevice& device,
         const Timer& timer,
         RenderSystem* renderSystem,
         TextureManager* textureManager,
@@ -72,7 +72,14 @@ namespace RL
             return;
         }
 
-        m_dx12Device = device.GetDevice();
+        if (device.GetAPI() == RHI::GraphicsAPI::DirectX12)
+        {
+            m_dx12Device = static_cast<ID3D12Device*>(const_cast<RHI::IRHIDevice&>(device).GetNativeDevice());
+        }
+        else
+        {
+            m_dx12Device = nullptr;
+        }
 
         HandleBlenderHotkeys(scene);
 
@@ -225,9 +232,9 @@ namespace RL
                             auto ext = assetPath.extension().string();
                             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-                            if (ext == ".gltf" || ext == ".glb")
+                            if ((ext == ".gltf" || ext == ".glb") && m_dx12Device)
                             {
-                                auto model = GLTFLoader::LoadFromFile(device.GetDevice(), assetPath.string());
+                                auto model = GLTFLoader::LoadFromFile(m_dx12Device, assetPath.string());
                                 if (model && !model->Meshes.empty())
                                 {
                                     Entity e = scene.CreateEntity(assetPath.stem().string());
@@ -254,9 +261,9 @@ namespace RL
                             auto ext = assetPath.extension().string();
                             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-                            if (ext == ".gltf" || ext == ".glb")
+                            if ((ext == ".gltf" || ext == ".glb") && m_dx12Device)
                             {
-                                auto model = GLTFLoader::LoadFromFile(device.GetDevice(), assetPath.string());
+                                auto model = GLTFLoader::LoadFromFile(m_dx12Device, assetPath.string());
                                 if (model && !model->Meshes.empty())
                                 {
                                     Entity e = scene.CreateEntity(assetPath.stem().string());
@@ -341,13 +348,13 @@ namespace RL
 
         if (m_openAddPopup)
         {
-            RenderBlenderAddPopup(scene, device.GetDevice(), renderSystem, stressTest);
+            RenderBlenderAddPopup(scene, m_dx12Device, renderSystem, stressTest);
         }
     }
 
     void SceneBuilder::RenderBlenderTopHeader(
         Scene& scene,
-        const DX12Device& device,
+        const RHI::IRHIDevice& device,
         RenderSystem* renderSystem,
         StressTest& stressTest)
     {
@@ -363,7 +370,7 @@ namespace RL
                 }
                 if (ImGui::MenuItem("Open Scene...", "Ctrl+O"))
                 {
-                    LoadScene(scene, device.GetDevice(), "assets/scenes/default.rlscene");
+                    LoadScene(scene, m_dx12Device, "assets/scenes/default.rlscene");
                 }
                 if (ImGui::MenuItem("Save Scene...", "Ctrl+S"))
                 {
@@ -372,9 +379,9 @@ namespace RL
                 ImGui::Separator();
                 if (ImGui::MenuItem("Import glTF / 3D Model...", "Ctrl+I"))
                 {
-                    if (renderSystem && std::filesystem::exists(m_gltfPathInput))
+                    if (m_dx12Device && renderSystem && std::filesystem::exists(m_gltfPathInput))
                     {
-                        auto model = GLTFLoader::LoadFromFile(device.GetDevice(), m_gltfPathInput);
+                        auto model = GLTFLoader::LoadFromFile(m_dx12Device, m_gltfPathInput);
                         if (model && !model->Meshes.empty())
                         {
                             Entity e = scene.CreateEntity("ImportedModel");
@@ -709,7 +716,7 @@ namespace RL
     void SceneBuilder::RenderBlenderViewportOverlays(
         Scene& scene,
         const Timer& timer,
-        [[maybe_unused]] const DX12Device& device,
+        [[maybe_unused]] const RHI::IRHIDevice& device,
         RenderSystem* renderSystem,
         float x, float y, float width, float height)
     {
@@ -1200,7 +1207,7 @@ namespace RL
 
     void SceneBuilder::RenderBlenderProperties(
         Scene& scene,
-        const DX12Device& device,
+        const RHI::IRHIDevice& device,
         const Timer& timer,
         [[maybe_unused]] RenderSystem* renderSystem,
         [[maybe_unused]] TextureManager* textureManager,
@@ -1688,7 +1695,7 @@ namespace RL
     void SceneBuilder::RenderBlenderStatusBar(
         const Scene& scene,
         const Timer& timer,
-        const DX12Device& device,
+        const RHI::IRHIDevice& device,
         float x, float y, float width, float height)
     {
         ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);

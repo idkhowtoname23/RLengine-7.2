@@ -9,6 +9,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <backends/imgui_impl_win32.h>
+#include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_dx12.h>
 #include <format>
 
@@ -91,8 +92,72 @@ namespace RL
             m_luaConsole.AddLog(std::string(message), level, level >= LogLevel::Error);
         });
 
+        m_backend = EditorBackend::DirectX12;
         m_isInitialized = true;
         RL_LOG_INFO("[EditorLayer] Dear ImGui (v{}) with DX12 backend initialized successfully.", IMGUI_VERSION);
+        return {};
+    }
+
+    std::expected<void, std::string> EditorLayer::InitializeDX11(
+        HWND hwnd,
+        ID3D11Device* device,
+        ID3D11DeviceContext* context,
+        ScriptEngine* scriptEngine)
+    {
+        if (m_isInitialized)
+        {
+            return {};
+        }
+
+        if (!hwnd || !device || !context)
+        {
+            return std::unexpected("Invalid HWND, ID3D11Device, or ID3D11DeviceContext passed to EditorLayer::InitializeDX11.");
+        }
+
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        Editor::Theme::Apply(Editor::EditorTheme::BlenderDark);
+
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        io.IniFilename = "imgui.ini";
+
+        if (!ImGui_ImplWin32_Init(hwnd))
+        {
+            ImGui::DestroyContext();
+            return std::unexpected("ImGui_ImplWin32_Init failed.");
+        }
+
+        if (!ImGui_ImplDX11_Init(device, context))
+        {
+            ImGui_ImplWin32_Shutdown();
+            ImGui::DestroyContext();
+            return std::unexpected("ImGui_ImplDX11_Init failed.");
+        }
+
+        m_luaConsole.SetScriptEngine(scriptEngine);
+
+        m_hierarchyPanel = m_panelManager.AddPanel<Editor::SceneHierarchyPanel>(nullptr);
+        m_inspectorPanel = m_panelManager.AddPanel<Editor::InspectorPanel>(nullptr);
+        m_contentBrowserPanel = m_panelManager.AddPanel<Editor::ContentBrowserPanel>();
+        m_statsPanel = m_panelManager.AddPanel<Editor::StatsPanel>();
+
+        m_hierarchyPanel->SetSelectionCallback([this](Entity ent) {
+            if (m_inspectorPanel)
+            {
+                m_inspectorPanel->SetSelected(ent.IsValid() ? std::make_optional(ent) : std::nullopt);
+            }
+            m_sceneBuilder.SelectEntity(ent);
+        });
+
+        Logger::SetLogCallback([this](LogLevel level, std::string_view message) {
+            m_luaConsole.AddLog(std::string(message), level, level >= LogLevel::Error);
+        });
+
+        m_backend = EditorBackend::DirectX11;
+        m_isInitialized = true;
+        RL_LOG_INFO("[EditorLayer] Dear ImGui (v{}) with DX11 backend initialized successfully.", IMGUI_VERSION);
         return {};
     }
 
@@ -105,7 +170,14 @@ namespace RL
 
         Logger::RemoveLogCallback();
 
-        ImGui_ImplDX12_Shutdown();
+        if (m_backend == EditorBackend::DirectX12)
+        {
+            ImGui_ImplDX12_Shutdown();
+        }
+        else
+        {
+            ImGui_ImplDX11_Shutdown();
+        }
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
 
@@ -122,7 +194,14 @@ namespace RL
             return;
         }
 
-        ImGui_ImplDX12_NewFrame();
+        if (m_backend == EditorBackend::DirectX12)
+        {
+            ImGui_ImplDX12_NewFrame();
+        }
+        else
+        {
+            ImGui_ImplDX11_NewFrame();
+        }
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
@@ -142,7 +221,7 @@ namespace RL
 
     void EditorLayer::RenderUI(
         const Timer& timer,
-        const DX12Device& device,
+        const RHI::IRHIDevice& device,
         Scene& scene,
         u32 renderedEntities,
         RenderSystem* renderSystem,
@@ -206,6 +285,17 @@ namespace RL
         ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
     }
 
+    void EditorLayer::EndFrameDX11()
+    {
+        if (!m_isInitialized)
+        {
+            return;
+        }
+
+        ImGui::Render();
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    }
+
     void EditorLayer::ApplyCyberpunkDarkStyle()
     {
         ImGuiStyle& style = ImGui::GetStyle();
@@ -264,7 +354,7 @@ namespace RL
 
     void EditorLayer::RenderDiagnosticsOverlay(
         const Timer& timer,
-        const DX12Device& device,
+        const RHI::IRHIDevice& device,
         const Scene& scene,
         u32 renderedEntities)
     {

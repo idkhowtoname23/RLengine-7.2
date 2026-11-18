@@ -61,6 +61,7 @@ set(IMGUI_SOURCES
     vendor/imgui/imgui_widgets.cpp
     vendor/imgui/imgui_demo.cpp
     vendor/imgui/backends/imgui_impl_win32.cpp
+    vendor/imgui/backends/imgui_impl_dx11.cpp
     vendor/imgui/backends/imgui_impl_dx12.cpp
 )
 
@@ -287,6 +288,9 @@ if(EXISTS "${WINDOWS_KITS_BIN}/dxcompiler.dll")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${WINDOWS_KITS_BIN}/dxil.dll"
             "$<TARGET_FILE_DIR:RLengine7.2>/dxil.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${WINDOWS_KITS_BIN}/d3dcompiler_47.dll"
+            "$<TARGET_FILE_DIR:RLengine7.2>/d3dcompiler_47.dll"
         COMMENT "Deploying DXC runtime DLLs to output directory"
     )
 endif()

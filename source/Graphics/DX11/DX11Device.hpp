@@ -73,6 +73,8 @@ namespace RL
         void SetShowGrid(bool show) noexcept { m_showGrid = show; }
         [[nodiscard]] bool IsGridVisible() const noexcept { return m_showGrid; }
 
+        [[nodiscard]] const RHI::GpuDeviceInfo& GetGpuInfo() const noexcept override { return m_gpuInfo; }
+        [[nodiscard]] void* GetNativeDevice() const noexcept override { return m_device.Get(); }
         [[nodiscard]] ID3D11Device*        GetDevice()        const noexcept { return m_device.Get(); }
         [[nodiscard]] ID3D11DeviceContext* GetContext()       const noexcept { return m_context.Get(); }
         [[nodiscard]] IDXGISwapChain*      GetSwapChain()     const noexcept { return m_swapChain.Get(); }
@@ -137,6 +139,7 @@ namespace RL
         std::unique_ptr<DX11CommandBuffer> m_commandBuffer;
 
         D3D_FEATURE_LEVEL m_featureLevel = D3D_FEATURE_LEVEL_11_0;
+        RHI::GpuDeviceInfo m_gpuInfo;
         std::string m_gpuDescription;
         u64 m_dedicatedVramBytes = 0;
         u32 m_width = 0;

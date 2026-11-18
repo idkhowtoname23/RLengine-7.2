@@ -212,7 +212,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
     if (useDX11)
     {
-        RL_LOG_INFO("Operating in DirectX 11 Fallback / Legacy mode (GTX 500-700 / Feature Level 11_0)...");
+        RL_LOG_INFO("Operating in DirectX 11 Fallback / Legacy mode (GTX 500-700 / Mobile / Wine / Feature Level 11_0)...");
         DX11Device dx11;
         auto d11Res = dx11.Initialize(window.GetHWND(), window.GetWidth(), window.GetHeight());
         if (!d11Res)
@@ -236,17 +236,56 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             }
         });
 
-        Entity cube = scene.CreateEntity("DX11_Cube");
+        ScriptEngine scriptEngine;
+        const auto scriptPath = ResolveAssetPath("scripts/main.lua");
+        auto scriptInitRes = scriptEngine.Initialize(scriptPath, &scene, nullptr, &window);
+        if (!scriptInitRes)
+        {
+            RL_LOG_WARN("Script engine initialization: {}", scriptInitRes.error());
+        }
+
+        EditorLayer editorLayer;
+        auto editorInitRes = editorLayer.InitializeDX11(
+            window.GetHWND(),
+            dx11.GetDevice(),
+            dx11.GetContext(),
+            &scriptEngine
+        );
+        if (!editorInitRes)
+        {
+            RL_LOG_FATAL("EditorLayer DX11 initialization failed: {}", editorInitRes.error());
+            return -11;
+        }
+
+        scene.SetPhysicsSystem(&editorLayer.GetSceneBuilder().GetPhysicsSystem());
+
+        auto audioInitRes = AudioEngine::Get().Initialize();
+        if (!audioInitRes)
+        {
+            RL_LOG_WARN("AudioEngine initialization: {}", audioInitRes.error());
+        }
+        AudioSystem audioSystem;
+        scene.SetAudioSystem(&audioSystem);
+
+        StressTest stressTest;
+        LuaEntityBridge::SetStressTest(&stressTest);
+
+        Entity cube = scene.CreateEntity("Cube");
         scene.AddComponent<MeshComponent>(cube, "Cube");
         scene.AddComponent<MaterialComponent>(cube);
         scene.GetComponent<TransformComponent>(cube).Position = { 0.0f, 0.0f, 0.0f };
 
-        Entity child = scene.CreateEntity("DX11_ChildCube");
-        scene.AddComponent<MeshComponent>(child, "ChildCube");
+        Entity child = scene.CreateEntity("ChildCube");
+        scene.AddComponent<MeshComponent>(child, "Cube");
         scene.GetComponent<TransformComponent>(child).Position = { 1.5f, 0.5f, 0.0f };
         scene.SetParent(child, cube);
 
-        Timer timer;
+        Timer& timer = window.GetTimer();
+        timer.Reset();
+
+        f32 titleUpdateTimer = 0.0f;
+        RL_LOG_INFO("All DirectX 11 subsystems initialized successfully. Entering engine main loop...");
+
         while (true)
         {
             Input::NewFrame();
@@ -257,29 +296,46 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             timer.Tick();
             const f32 dt = timer.GetDeltaTime();
 
-            if (auto* pTr = scene.TryGetComponent<TransformComponent>(cube))
+            if (window.IsMinimized())
             {
-                pTr->Rotation.y += dt * 0.75f;
-            }
-            if (auto* pChildTr = scene.TryGetComponent<TransformComponent>(child))
-            {
-                pChildTr->Rotation.x += dt * 1.5f;
+                Sleep(10);
+                continue;
             }
 
-            if (Input::IsKeyDown(KeyCode::W)) scene.GetCamera().Move(0.0f, 0.0f, 5.0f * dt);
-            if (Input::IsKeyDown(KeyCode::S)) scene.GetCamera().Move(0.0f, 0.0f, -5.0f * dt);
-            if (Input::IsKeyDown(KeyCode::A)) scene.GetCamera().Move(-5.0f * dt, 0.0f, 0.0f);
-            if (Input::IsKeyDown(KeyCode::D)) scene.GetCamera().Move(5.0f * dt, 0.0f, 0.0f);
-            if (Input::IsKeyDown(KeyCode::Q)) scene.GetCamera().Move(0.0f, -5.0f * dt, 0.0f);
-            if (Input::IsKeyDown(KeyCode::E)) scene.GetCamera().Move(0.0f, 5.0f * dt, 0.0f);
+            if (editorLayer.GetSceneBuilder().IsSimulationRunning())
+            {
+                scriptEngine.Tick(dt);
+                scene.Update(dt);
+                stressTest.Update(scene, dt);
+            }
 
-            scene.Update(dt);
+            titleUpdateTimer += dt;
+            if (titleUpdateTimer >= 0.25f)
+            {
+                titleUpdateTimer = 0.0f;
+                const auto title = std::format(
+                    "RLengine 7.2 | GPU: {} | {}x{} | {} FPS ({:.2f} ms) | ECS Entities: {} [DirectX 11]",
+                    dx11.GetGpuDescription(),
+                    window.GetWidth(),
+                    window.GetHeight(),
+                    timer.GetFPS(),
+                    timer.GetFrameTimeMS(),
+                    scene.GetAliveEntityCount()
+                );
+                window.SetTitle(title);
+            }
+
+            editorLayer.BeginFrame();
+            editorLayer.RenderUI(timer, dx11, scene, static_cast<u32>(scene.GetAliveEntityCount()), nullptr, nullptr, &scriptEngine);
 
             dx11.BeginFrame();
             dx11.ClearRenderTarget(0.04f, 0.06f, 0.09f, 1.0f);
             dx11.RenderScene(scene);
+            editorLayer.EndFrameDX11();
             dx11.EndFrame();
-            dx11.Present(!smokeTest);
+
+            const bool vsync = editorLayer.GetSceneBuilder().IsVSyncEnabled();
+            dx11.Present(vsync);
 
             if (smokeTest && timer.GetFrameCount() >= maxTestFrames)
             {
@@ -306,7 +362,12 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             }
         }
         window.SetResizeCallback(nullptr);
+        dx11.WaitForGPU();
+        editorLayer.Shutdown();
+        AudioEngine::Get().Shutdown();
+        scriptEngine.Shutdown();
         dx11.Shutdown();
+        window.Shutdown();
         RL_LOG_INFO("DirectX 11 shutdown completed cleanly.");
         return 0;
     }

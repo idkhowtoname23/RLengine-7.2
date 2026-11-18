@@ -125,8 +125,24 @@ namespace RL
 
         const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-        const int posX = (screenWidth - windowWidth) / 2;
-        const int posY = (screenHeight - windowHeight) / 2;
+
+        int posX = (screenWidth - windowWidth) / 2;
+        int posY = (screenHeight - windowHeight) / 2;
+        int finalWidth = windowWidth;
+        int finalHeight = windowHeight;
+        bool shouldMaximize = false;
+
+        if (screenWidth > 0 && screenHeight > 0)
+        {
+            if (windowWidth >= screenWidth || windowHeight >= screenHeight)
+            {
+                shouldMaximize = true;
+                finalWidth = screenWidth;
+                finalHeight = screenHeight;
+                posX = 0;
+                posY = 0;
+            }
+        }
 
         m_hwnd = CreateWindowExW(
             exStyle,
@@ -135,8 +151,8 @@ namespace RL
             style,
             posX,
             posY,
-            windowWidth,
-            windowHeight,
+            finalWidth,
+            finalHeight,
             nullptr,
             nullptr,
             m_hinstance,
@@ -157,8 +173,25 @@ namespace RL
             SendMessageW(m_hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSm));
         }
 
-        ShowWindow(m_hwnd, SW_SHOW);
+        if (shouldMaximize)
+        {
+            ShowWindow(m_hwnd, SW_MAXIMIZE);
+        }
+        else
+        {
+            ShowWindow(m_hwnd, SW_SHOW);
+        }
         UpdateWindow(m_hwnd);
+
+        RECT clientRc{};
+        if (GetClientRect(m_hwnd, &clientRc))
+        {
+            if (clientRc.right > clientRc.left && clientRc.bottom > clientRc.top)
+            {
+                m_width = static_cast<u32>(clientRc.right - clientRc.left);
+                m_height = static_cast<u32>(clientRc.bottom - clientRc.top);
+            }
+        }
 
         m_timer.Reset();
 

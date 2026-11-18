@@ -93,7 +93,8 @@ namespace RL
         [[nodiscard]] IDXGISwapChain4* GetSwapChain() const noexcept { return m_swapChain.Get(); }
         [[nodiscard]] u32 GetCurrentFrameIndex() const noexcept { return m_frameIndex; }
         [[nodiscard]] const FrameContext& GetCurrentFrameContext() const noexcept { return m_frameContexts[m_frameIndex]; }
-        [[nodiscard]] const RHI::GpuDeviceInfo& GetGpuInfo() const noexcept { return m_gpuInfo; }
+        [[nodiscard]] const RHI::GpuDeviceInfo& GetGpuInfo() const noexcept override { return m_gpuInfo; }
+        [[nodiscard]] void* GetNativeDevice() const noexcept override { return m_device.Get(); }
         [[nodiscard]] ID3D12Resource* GetCurrentRenderTarget() const noexcept { return m_renderTargets[m_frameIndex].Get(); }
         [[nodiscard]] ID3D12Resource* GetDepthStencilBuffer() const noexcept { return m_depthStencilBuffer.Get(); }
         [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE GetDSVHandle() const noexcept { return m_dsvHeap ? m_dsvHeap->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{0}; }

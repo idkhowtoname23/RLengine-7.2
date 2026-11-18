@@ -7,6 +7,7 @@
 #include "Graphics/RHI/RHICommon.hpp"
 #include "Graphics/DX12/ParticleSystem.hpp"
 #include "Editor/Gizmo/GizmoSystem.hpp"
+#include "Graphics/RHI/RHIInterfaces.hpp"
 #include "Editor/History/CommandHistory.hpp"
 
 #include <DirectXMath.h>
@@ -99,7 +100,7 @@ namespace RL
 
         void Render(
             Scene& scene,
-            const DX12Device& device,
+            const RHI::IRHIDevice& device,
             const Timer& timer,
             RenderSystem* renderSystem,
             TextureManager* textureManager,
@@ -142,7 +143,7 @@ namespace RL
 
         void RenderBlenderTopHeader(
             Scene& scene,
-            const DX12Device& device,
+            const RHI::IRHIDevice& device,
             RenderSystem* renderSystem,
             StressTest& stressTest);
 
@@ -151,7 +152,7 @@ namespace RL
         void RenderBlenderViewportOverlays(
             Scene& scene,
             const Timer& timer,
-            const DX12Device& device,
+            const RHI::IRHIDevice& device,
             RenderSystem* renderSystem,
             float x, float y, float width, float height);
 
@@ -159,7 +160,7 @@ namespace RL
 
         void RenderBlenderProperties(
             Scene& scene,
-            const DX12Device& device,
+            const RHI::IRHIDevice& device,
             const Timer& timer,
             RenderSystem* renderSystem,
             TextureManager* textureManager,
@@ -170,7 +171,7 @@ namespace RL
         void RenderBlenderStatusBar(
             const Scene& scene,
             const Timer& timer,
-            const DX12Device& device,
+            const RHI::IRHIDevice& device,
             float x, float y, float width, float height);
 
         void RenderBlenderAddPopup(
