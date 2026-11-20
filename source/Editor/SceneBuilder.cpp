@@ -242,6 +242,34 @@ namespace RL
                                     mc.MeshName = assetPath.stem().string();
                                     mc.ModelPath = assetPath.string();
                                     mc.MeshRef = model->Meshes[0];
+                                    if (!model->TexturePaths.empty())
+                                    {
+                                        mc.TexturePath = model->TexturePaths[0];
+                                    }
+                                    auto& mat = scene.AddComponent<MaterialComponent>(e);
+                                    if (!model->AlbedoTexturePath.empty())
+                                    {
+                                        mat.TexturePath = model->AlbedoTexturePath;
+                                    }
+                                    else if (!model->TexturePaths.empty())
+                                    {
+                                        mat.TexturePath = model->TexturePaths[0];
+                                    }
+                                    if (!model->NormalMapPath.empty())
+                                    {
+                                        mat.NormalMapPath = model->NormalMapPath;
+                                    }
+                                    if (!model->MetallicRoughnessMapPath.empty())
+                                    {
+                                        mat.MetallicRoughnessMapPath = model->MetallicRoughnessMapPath;
+                                    }
+                                    if (!model->EmissiveMapPath.empty())
+                                    {
+                                        mat.EmissiveMapPath = model->EmissiveMapPath;
+                                    }
+                                    mat.Metallic = model->Metallic;
+                                    mat.Roughness = model->Roughness;
+                                    mat.EmissiveColor = model->EmissiveColor;
                                     m_selectedEntity = e;
                                 }
                             }
@@ -271,6 +299,34 @@ namespace RL
                                     mc.MeshName = assetPath.stem().string();
                                     mc.ModelPath = assetPath.string();
                                     mc.MeshRef = model->Meshes[0];
+                                    if (!model->TexturePaths.empty())
+                                    {
+                                        mc.TexturePath = model->TexturePaths[0];
+                                    }
+                                    auto& mat = scene.AddComponent<MaterialComponent>(e);
+                                    if (!model->AlbedoTexturePath.empty())
+                                    {
+                                        mat.TexturePath = model->AlbedoTexturePath;
+                                    }
+                                    else if (!model->TexturePaths.empty())
+                                    {
+                                        mat.TexturePath = model->TexturePaths[0];
+                                    }
+                                    if (!model->NormalMapPath.empty())
+                                    {
+                                        mat.NormalMapPath = model->NormalMapPath;
+                                    }
+                                    if (!model->MetallicRoughnessMapPath.empty())
+                                    {
+                                        mat.MetallicRoughnessMapPath = model->MetallicRoughnessMapPath;
+                                    }
+                                    if (!model->EmissiveMapPath.empty())
+                                    {
+                                        mat.EmissiveMapPath = model->EmissiveMapPath;
+                                    }
+                                    mat.Metallic = model->Metallic;
+                                    mat.Roughness = model->Roughness;
+                                    mat.EmissiveColor = model->EmissiveColor;
                                     m_selectedEntity = e;
                                 }
                             }
@@ -389,6 +445,34 @@ namespace RL
                             mc.MeshName = "ImportedMesh";
                             mc.ModelPath = m_gltfPathInput;
                             mc.MeshRef = model->Meshes[0];
+                            if (!model->TexturePaths.empty())
+                            {
+                                mc.TexturePath = model->TexturePaths[0];
+                            }
+                            auto& mat = scene.AddComponent<MaterialComponent>(e);
+                            if (!model->AlbedoTexturePath.empty())
+                            {
+                                mat.TexturePath = model->AlbedoTexturePath;
+                            }
+                            else if (!model->TexturePaths.empty())
+                            {
+                                mat.TexturePath = model->TexturePaths[0];
+                            }
+                            if (!model->NormalMapPath.empty())
+                            {
+                                mat.NormalMapPath = model->NormalMapPath;
+                            }
+                            if (!model->MetallicRoughnessMapPath.empty())
+                            {
+                                mat.MetallicRoughnessMapPath = model->MetallicRoughnessMapPath;
+                            }
+                            if (!model->EmissiveMapPath.empty())
+                            {
+                                mat.EmissiveMapPath = model->EmissiveMapPath;
+                            }
+                            mat.Metallic = model->Metallic;
+                            mat.Roughness = model->Roughness;
+                            mat.EmissiveColor = model->EmissiveColor;
                             m_selectedEntity = e;
                         }
                     }

@@ -54,6 +54,10 @@ namespace RL
         static int Entity_SetTag(lua_State* L);
         static int Entity_SetVisible(lua_State* L);
         static int Entity_IsVisible(lua_State* L);
+        static int Entity_PlaySound(lua_State* L);
+        static int Entity_StopSound(lua_State* L);
+        static int Entity_IsSoundPlaying(lua_State* L);
+        static int Entity_SetAudioVolume(lua_State* L);
         static int Entity_IsValid(lua_State* L);
         static int Entity_GetID(lua_State* L);
         static int Entity_GetIndex(lua_State* L);

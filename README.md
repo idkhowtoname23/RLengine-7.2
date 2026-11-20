@@ -1,6 +1,6 @@
-# RLengine 7.2 Alpha 1 (Pre-Release)
+# RLengine 7.2 Alpha 2 (Pre-Release)
 
-> **Release Stage**: 🧪 **Alpha (Alpha 1 - Pre-Release)**  
+> **Release Stage**: 🧪 **Alpha (Alpha 2 - Pre-Release)**  
 > **Build Target**: C++23 | Visual Studio 18 2026 / 2022 | DirectX 12 (FL 12_1) & DirectX 11 (FL 11_0)  
 > **Code Quality**: Strict Zero Comments Policy enforced across all source, header, shader, script, and build configuration files.
 
@@ -8,28 +8,41 @@
 
 ## 📌 Overview & Development Status
 
-**RLengine 7.2 Alpha 1** marks the first pre-release milestone of the next-generation RLengine 7.2 series. Engineered to modern **C++23** standards with an emphasis on physical accuracy, material realism, and professional workflow isolation, 7.2 Alpha 1 builds directly on the foundations established in version 7.1 while introducing critical architectural advancements in physics simulation, tangent-space rendering, event-driven scripting, and editor ergonomics.
+**RLengine 7.2 Alpha 2** represents milestone 2 of the planned 5–7 alpha phases towards the final RLengine 7.2 release. Engineered to modern **C++23** standards with an emphasis on physical accuracy, material realism, and professional workflow isolation, 7.2 Alpha 2 introduces comprehensive physics constraint and joint simulation, live background shader hot-reloading with non-blocking Windows I/O, full 3D spatial audio scripting with object-oriented Lua bindings, and multi-layer glTF PBR material autoloading.
 
 All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (Shader Model 6.5 DXIL)** and **DirectX 11 (Shader Model 5.0 DXBC)** pipelines.
 
 ---
 
-## 🔍 What's New in 7.2 Alpha 1 vs 7.1 — Key Differences
+## 🔍 What's New in 7.2 Alpha 2 vs Alpha 1 — Key Additions
 
-| Architectural Subsystem | RLengine 7.1 | RLengine 7.2 Alpha 1 (New) | Impact & Improvements |
+| Architectural Subsystem | RLengine 7.2 Alpha 1 | RLengine 7.2 Alpha 2 (New) | Impact & Improvements |
 | :--- | :--- | :--- | :--- |
-| **Physics Simulation** | Discrete 60 Hz Euler steps with AABB collision | **Continuous Collision Detection (CCD)** + **15-Axis SAT OBB** | Eliminates high-velocity tunneling; enables realistic physical rotation on arbitrary 3D oriented boxes. |
-| **Physics Triggers** | Rigid physical separation impulses only | **Trigger Colliders (`IsTrigger`)** + Enter/Stay/Exit Events | Area volumes, pickup zones, and sensor fields without physical repulsion or velocity damping. |
-| **Material Pipeline** | Cook-Torrance PBR (Albedo, Roughness, Metallic) | **Tangent-Space PBR Normal Mapping** (`TBN` frame) | Micro-surface details without geometry tessellation; full Normal Map slot in DX12 and DX11 shaders. |
-| **Event Architecture** | Direct tight-coupled function calls | **Decoupled Type-Erased EventBus** with `DepthGuard` | Centralized publish-subscribe bus; Lua `RL.Events` API with stack protection against infinite recursion. |
-| **Editor Workspace** | Fixed monolithic Blender layout | **Isolated Blender 4.x DCC Station** + Floating REPL Console | Clean non-colliding layout; Outliner and Properties isolated from Viewport; floating non-dockable console (`NoDocking`). |
-| **Command History** | Basic stack undo | **Deep Entity Cloning & Undo/Redo** (`CommandHistory`) | Serialization snapshots capturing 16 components with deep subtree duplication and reparenting undo. |
-| **OS Memory Telemetry** | Log-based profiling | **Real-Time `MemoryStats` Telemetry** | Real-time Working Set, Private Committed Bytes, and Peak RAM monitoring via Win32 PSAPI. |
-| **Fallback RHI** | Basic DX11 rendering | **DX11 Normal Map Fallback + PCF Shadows** | Full tangent normal decoding and 3x3 PCF directional shadows on legacy `D3D_FEATURE_LEVEL_11_0` hardware. |
+| **Physics Constraints & Joints** | Rigid dynamic impulses and triggers only | **DistanceJoint**, **HingeJoint**, **FixedJoint** (`BreakForce`) | Realistic mechanical connections, hinged doors/levers with angular limits & motors, and breakable bonds with trigger events. |
+| **Shader Workflow** | Offline compile at startup only | **Live Shader Hot-Reloading** (`FileWatcher` + `ReloadPipelines`) | Background directory monitoring with Windows overlapped I/O; instant pipeline swap upon editing `.hlsl` files or pressing F5. |
+| **Spatial Audio & Lua** | Basic playback | **3D Spatial Audio ECS & OOP Lua Bridge** | `AudioListenerComponent`, `AudioSourceComponent`, `entity:PlaySound()`, `entity:StopSound()`, `RL.Audio.Play3D()`. |
+| **glTF Material Import** | Basic single-texture loader | **Multi-Layer PBR glTF Autoloading** | Full extraction of normal maps, metallic-roughness maps, emissive textures and factors into `MaterialComponent`. |
 
 ---
 
-## 🚀 Deep Dive: Major New Features in 7.2 Alpha 1
+## 🚀 Deep Dive: Major New Features in 7.2 Alpha 2
+
+### 1. ⚙️ Physics Constraints & Joints Solver
+* **DistanceJointComponent**: Constrains relative distance between anchors with configurable stiffness and damping. Features `AutoDistance` auto-calibration and dynamic/static mass ratio correction.
+* **HingeJointComponent**: Enforces anchor coincidence, projects angular velocity onto the hinge axis, and supports angular limits (`LowerAngleLimit`, `UpperAngleLimit`) and powered motors (`MotorSpeed`, `MaxMotorTorque`).
+* **FixedJointComponent**: Rigidly locks relative position and orientation, with configurable `BreakForce` threshold publishing `PhysicsTriggerEvent` when excessive forces break the bond.
+
+### 2. 🔥 Live Shader Hot-Reloading
+* **Overlapped FileWatcher**: Background directory watcher monitoring `shaders/` using non-blocking Windows overlapped I/O (`ReadDirectoryChangesW` + `CancelIoEx`) without blocking engine shutdown.
+* **Atomic Pipeline Swapping**: `ReloadPipelines()` recompiles modified vertex/pixel shaders and recreates Graphics Pipeline State Objects (Mesh, Quad, Shadow Depth, Ground Grid) with graceful fallback to existing pipelines on compilation error.
+* **Uniform VFS Resolution**: Seamless resolution across `shaders://` paths, relative local directories, and output binaries.
+
+### 3. 🔊 3D Spatial Audio Subsystem & Lua OOP Bridge
+* **Listener & Emitter Tracking**: `AudioListenerComponent` queries camera/entity orientation while `AudioSourceComponent` syncs position, volume, and pitch with miniaudio 3D attenuation.
+* **Lua 5.4 Object-Oriented Methods**: Script entities expose `entity:PlaySound()`, `entity:StopSound()`, `entity:IsSoundPlaying()`, and `entity:SetAudioVolume()`, complemented by global `RL.Audio.Play3D()`.
+
+### 4. 🎨 Multi-Layer glTF PBR Autoloading
+* **Comprehensive PBR Extraction**: `GLTFLoader` automatically extracts normal maps, metallic-roughness textures, emissive maps, metallic factors, roughness factors, and emissive colors, binding them directly to `MaterialComponent` upon scene import.
 
 ### 1. ⚡ Continuous Collision Detection (CCD) & Trigger Zones
 * **High-Speed Anti-Tunneling**: Discrete physics engines suffer from tunneling when high-velocity objects travel further than collider thicknesses in a single frame. 7.2 Alpha 1 introduces ray-cast swept sphere continuous collision detection (`m_ccdEnabled = true`, `SetCCDEnabled`). Dynamic rigidbodies predict motion paths and clamp time-of-impact (TOI) against geometry before position integration, preventing penetration up to 900+ units/sec.

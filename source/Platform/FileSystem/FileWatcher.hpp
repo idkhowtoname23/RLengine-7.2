@@ -67,6 +67,20 @@ namespace RL
             if (m_thread.joinable())
             {
                 m_thread.request_stop();
+                {
+                    std::lock_guard lock(m_mutex);
+                    for (auto& entry : m_watches)
+                    {
+                        if (entry.hDir != INVALID_HANDLE_VALUE)
+                        {
+                            CancelIoEx(entry.hDir, &entry.overlapped);
+                            if (entry.hEvent != INVALID_HANDLE_VALUE)
+                            {
+                                SetEvent(entry.hEvent);
+                            }
+                        }
+                    }
+                }
                 m_thread.join();
             }
         }
@@ -81,13 +95,14 @@ namespace RL
             ChangeCallback        callback;
 
             HANDLE hDir = INVALID_HANDLE_VALUE;
+            HANDLE hEvent = INVALID_HANDLE_VALUE;
+            OVERLAPPED overlapped{};
+            bool ioPending = false;
+            alignas(DWORD) char buffer[65536];
         };
 
         void RunLoop(std::stop_token st)
         {
-            constexpr DWORD kBufferSize = 65536;
-            alignas(DWORD) char buffer[kBufferSize];
-
             {
                 std::lock_guard lock(m_mutex);
                 for (auto& entry : m_watches)
@@ -98,81 +113,106 @@ namespace RL
                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                         nullptr,
                         OPEN_EXISTING,
-                        FILE_FLAG_BACKUP_SEMANTICS,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
                         nullptr
                     );
                     if (entry.hDir == INVALID_HANDLE_VALUE)
                     {
                         RL_LOG_ERROR("FileWatcher: cannot open dir '{}'", entry.directory.string());
                     }
+                    else
+                    {
+                        entry.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                        entry.overlapped.hEvent = entry.hEvent;
+                        entry.ioPending = false;
+                    }
                 }
             }
 
             while (!st.stop_requested())
             {
-                std::lock_guard lock(m_mutex);
                 for (auto& entry : m_watches)
                 {
-                    if (entry.hDir == INVALID_HANDLE_VALUE) continue;
+                    if (st.stop_requested()) break;
+                    if (entry.hDir == INVALID_HANDLE_VALUE || entry.hEvent == INVALID_HANDLE_VALUE) continue;
 
-                    DWORD bytesReturned = 0;
-                    const BOOL ok = ReadDirectoryChangesW(
-                        entry.hDir,
-                        buffer,
-                        kBufferSize,
-                        entry.recursive ? TRUE : FALSE,
-                        FILE_NOTIFY_CHANGE_FILE_NAME |
-                        FILE_NOTIFY_CHANGE_DIR_NAME  |
-                        FILE_NOTIFY_CHANGE_LAST_WRITE|
-                        FILE_NOTIFY_CHANGE_SIZE,
-                        &bytesReturned,
-                        nullptr,
-                        nullptr
-                    );
-
-                    if (!ok || bytesReturned == 0 || bytesReturned > kBufferSize) continue;
-
-                    const char* const bufEnd = buffer + bytesReturned;
-                    const char* currentPtr = buffer;
-
-                    while (currentPtr + sizeof(FILE_NOTIFY_INFORMATION) <= bufEnd)
+                    if (!entry.ioPending)
                     {
-                        const auto* fni = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(currentPtr);
-                        const char* fileNameStart = reinterpret_cast<const char*>(fni->FileName);
-                        const char* fileNameEnd = fileNameStart + fni->FileNameLength;
-                        if (fileNameEnd > bufEnd)
+                        ResetEvent(entry.hEvent);
+                        std::memset(&entry.overlapped, 0, sizeof(OVERLAPPED));
+                        entry.overlapped.hEvent = entry.hEvent;
+
+                        DWORD dummyBytes = 0;
+                        const BOOL ok = ReadDirectoryChangesW(
+                            entry.hDir,
+                            entry.buffer,
+                            sizeof(entry.buffer),
+                            entry.recursive ? TRUE : FALSE,
+                            FILE_NOTIFY_CHANGE_FILE_NAME |
+                            FILE_NOTIFY_CHANGE_DIR_NAME  |
+                            FILE_NOTIFY_CHANGE_LAST_WRITE|
+                            FILE_NOTIFY_CHANGE_SIZE,
+                            &dummyBytes,
+                            &entry.overlapped,
+                            nullptr
+                        );
+
+                        if (!ok && GetLastError() != ERROR_IO_PENDING)
                         {
-                            break;
+                            RL_LOG_WARN("FileWatcher: ReadDirectoryChangesW failed: {}", GetLastError());
+                            continue;
                         }
+                        entry.ioPending = true;
+                    }
 
-                        const std::wstring wname(fni->FileName, fni->FileNameLength / sizeof(wchar_t));
-
-                        FileChangeEvent evt;
-                        evt.path = entry.directory / wname;
-
-                        switch (fni->Action)
+                    const DWORD waitRes = WaitForSingleObject(entry.hEvent, 50);
+                    if (waitRes == WAIT_OBJECT_0)
+                    {
+                        DWORD bytesTransferred = 0;
+                        if (GetOverlappedResult(entry.hDir, &entry.overlapped, &bytesTransferred, FALSE) && bytesTransferred > 0 && bytesTransferred <= sizeof(entry.buffer))
                         {
-                            case FILE_ACTION_ADDED:            evt.type = FileChangeType::Created;  break;
-                            case FILE_ACTION_REMOVED:          evt.type = FileChangeType::Deleted;  break;
-                            case FILE_ACTION_MODIFIED:         evt.type = FileChangeType::Modified; break;
-                            case FILE_ACTION_RENAMED_OLD_NAME: evt.type = FileChangeType::Renamed;
-                                                               evt.oldPath = evt.path;              break;
-                            case FILE_ACTION_RENAMED_NEW_NAME: evt.type = FileChangeType::Renamed;  break;
-                            default: break;
-                        }
+                            const char* const bufEnd = entry.buffer + bytesTransferred;
+                            const char* currentPtr = entry.buffer;
 
-                        if (entry.callback)
-                        {
-                            entry.callback(evt);
-                        }
+                            while (currentPtr + sizeof(FILE_NOTIFY_INFORMATION) <= bufEnd)
+                            {
+                                const auto* fni = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(currentPtr);
+                                const char* fileNameStart = reinterpret_cast<const char*>(fni->FileName);
+                                const char* fileNameEnd = fileNameStart + fni->FileNameLength;
+                                if (fileNameEnd > bufEnd)
+                                {
+                                    break;
+                                }
 
-                        if (fni->NextEntryOffset == 0) break;
-                        if (currentPtr + fni->NextEntryOffset >= bufEnd) break;
-                        currentPtr += fni->NextEntryOffset;
+                                const std::wstring wname(fni->FileName, fni->FileNameLength / sizeof(wchar_t));
+
+                                FileChangeEvent evt;
+                                evt.path = entry.directory / wname;
+
+                                switch (fni->Action)
+                                {
+                                    case FILE_ACTION_ADDED:            evt.type = FileChangeType::Created;  break;
+                                    case FILE_ACTION_REMOVED:          evt.type = FileChangeType::Deleted;  break;
+                                    case FILE_ACTION_MODIFIED:         evt.type = FileChangeType::Modified; break;
+                                    case FILE_ACTION_RENAMED_OLD_NAME: evt.type = FileChangeType::Renamed;
+                                                                       evt.oldPath = evt.path;              break;
+                                    case FILE_ACTION_RENAMED_NEW_NAME: evt.type = FileChangeType::Renamed;  break;
+                                    default: break;
+                                }
+
+                                if (entry.callback)
+                                {
+                                    entry.callback(evt);
+                                }
+
+                                if (fni->NextEntryOffset == 0) break;
+                                if (currentPtr + fni->NextEntryOffset >= bufEnd) break;
+                                currentPtr += fni->NextEntryOffset;
+                            }
+                        }
+                        entry.ioPending = false;
                     }
                 }
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
 
             std::lock_guard lock(m_mutex);
@@ -180,8 +220,14 @@ namespace RL
             {
                 if (entry.hDir != INVALID_HANDLE_VALUE)
                 {
+                    CancelIoEx(entry.hDir, &entry.overlapped);
                     CloseHandle(entry.hDir);
                     entry.hDir = INVALID_HANDLE_VALUE;
+                }
+                if (entry.hEvent != INVALID_HANDLE_VALUE)
+                {
+                    CloseHandle(entry.hEvent);
+                    entry.hEvent = INVALID_HANDLE_VALUE;
                 }
             }
         }

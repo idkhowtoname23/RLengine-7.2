@@ -61,6 +61,13 @@ namespace RL
         std::string Name;
         std::vector<std::shared_ptr<Mesh>> Meshes;
         std::vector<std::string> TexturePaths;
+        std::string AlbedoTexturePath;
+        std::string NormalMapPath;
+        std::string MetallicRoughnessMapPath;
+        std::string EmissiveMapPath;
+        f32 Metallic = 0.0f;
+        f32 Roughness = 0.5f;
+        DirectX::XMFLOAT3 EmissiveColor{ 0.0f, 0.0f, 0.0f };
         std::vector<Skeleton> Skeletons;
         std::vector<AnimationClip> Animations;
     };

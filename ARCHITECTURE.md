@@ -135,16 +135,29 @@ A deterministic, fixed-time-step physics engine:
 * **Fixed 60Hz Step with Sub-Stepping**: Accumulator-based fixed time step ($1/60$s) with two sub-steps ($kSubSteps = 2$) for integration stability.
 * **Spatial Hash Broadphase**: 3D spatial grid hashing entity positions into cell buckets ($4.0\text{m}$ cell size), reducing pairwise collision checks from $O(N^2)$ to $O(N)$.
 * **Collision Resolution**: Momentum-conserving impulse resolution with restitution, frictional damping, and ground plane ($Y=0$) support.
+* **Physics Constraints & Joints Solver**:
+  * **DistanceJointComponent**: Constrains relative distance between anchors with stiffness and damping, supporting auto-calibration (`AutoDistance`) and dynamic/static mass ratios.
+  * **HingeJointComponent**: Enforces anchor point coincidence, projects angular velocity onto hinge axis, and supports angular limits (`LowerAngleLimit`, `UpperAngleLimit`) and powered motors (`MotorSpeed`, `MaxMotorTorque`).
+  * **FixedJointComponent**: Rigidly locks relative position and orientation, with configurable `BreakForce` threshold publishing `PhysicsTriggerEvent` when excessive forces break the bond.
 * **Raycasting**: High-precision slab AABB ray-box (with scaled collider offset and half-sizes) and ray-sphere intersection testing returning hit entity, world hit position, hit surface normal, and distance.
 * **Simulation Snapshot & Restore**: Non-destructive snapshotting (`CaptureSnapshot` / `RestoreSnapshot`) allowing the editor to run real-time physics simulations and revert entity positions when leaving play mode.
 
 ---
 
-### 3.5 3D Spatial Audio Subsystem
+### 3.5 3D Spatial Audio Subsystem & Scripting
 
 * Audio playback powered by `miniaudio`.
-* 3D positional audio calculation based on camera listener position and audio emitter entities.
+* 3D positional audio calculation based on camera / `AudioListenerComponent` position and orientation, and `AudioSourceComponent` emitters with distance attenuation.
+* Complete Lua 5.4 scripting bridge integration with object-oriented entity methods: `entity:PlaySound()`, `entity:StopSound()`, `entity:IsSoundPlaying()`, `entity:SetAudioVolume()`, and `RL.Audio.Play3D()`.
 * Clean initialization, multithreaded stream decoding, and leak-free shutdown.
+
+---
+
+### 3.6 Live Shader Hot-Reloading
+
+* **Overlapped FileWatcher**: Background directory watcher monitoring `shaders/` using non-blocking Windows overlapped I/O (`ReadDirectoryChangesW` + `CancelIoEx`) without blocking thread termination.
+* **Atomic Pipeline Swapping**: `ReloadPipelines()` recompiles modified vertex/pixel shaders and recreates Graphics Pipeline State Objects (Mesh, Quad, Shadow Depth, Ground Grid) with graceful fallback to existing pipelines on compilation error.
+* **Virtual File System Resolution**: Uniform resolution across `shaders://` paths, relative local directories, and output binaries.
 
 ---
 

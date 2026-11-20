@@ -73,8 +73,17 @@ namespace RL
         void RestoreSnapshot(Scene& scene);
         void ClearSnapshot() noexcept;
 
+        void SolveConstraints(Scene& scene, f32 dt);
+
     private:
         void Integrate(Scene& scene, f32 dt);
+
+        struct HingeJointState
+        {
+            DirectX::XMFLOAT3 LocalAnchorB{ 0.0f, 0.0f, 0.0f };
+            DirectX::XMFLOAT3 WorldAnchor{ 0.0f, 0.0f, 0.0f };
+            bool Initialized = false;
+        };
 
         static constexpr f32 FixedTimeStep = 1.0f / 60.0f;
         f32 m_accumulator = 0.0f;
@@ -82,6 +91,7 @@ namespace RL
         DirectX::XMFLOAT3 m_gravity{ 0.0f, -9.81f, 0.0f };
         std::unordered_map<u64, DirectX::XMFLOAT3> m_initialTransforms;
         std::unordered_map<u64, DirectX::XMFLOAT3> m_initialRotations;
+        std::unordered_map<u64, HingeJointState> m_hingeStates;
         std::vector<TriggerPair> m_activeTriggerPairs;
         std::vector<TriggerEvent> m_triggerEvents;
     };

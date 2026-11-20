@@ -8,8 +8,10 @@
 #include "Graphics/DX12/Pipeline.hpp"
 #include "Graphics/DX12/Mesh.hpp"
 #include "Graphics/DX12/ShadowMap.hpp"
+#include "Platform/FileSystem/FileWatcher.hpp"
 
 #include <expected>
+#include <atomic>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,6 +28,7 @@ namespace RL
     class DescriptorManager;
     class TextureManager;
     class ShaderCompiler;
+    class FileWatcher;
 
     struct FrustumPlanes
     {
@@ -62,6 +65,10 @@ namespace RL
             TextureManager* textureManager = nullptr,
             ShaderCompiler* shaderCompiler = nullptr);
         void Destroy() noexcept;
+
+        [[nodiscard]] std::expected<void, std::string> ReloadPipelines();
+        void RequestShaderReload() noexcept { m_needsShaderReload.store(true, std::memory_order_release); }
+        [[nodiscard]] bool NeedsShaderReload() const noexcept { return m_needsShaderReload.load(std::memory_order_acquire); }
 
         void SetDescriptorManager(DescriptorManager* descriptorManager) noexcept { m_descriptorManager = descriptorManager; }
         void SetTextureManager(TextureManager* textureManager) noexcept { m_textureManager = textureManager; }
@@ -144,6 +151,8 @@ namespace RL
         Pipeline m_ownedQuadPipeline;
         Pipeline* m_quadPipeline = &m_ownedQuadPipeline;
         ShaderCompiler* m_shaderCompiler = nullptr;
+        std::atomic<bool> m_needsShaderReload{ false };
+        std::unique_ptr<FileWatcher> m_fileWatcher;
 
         Memory::FrameAllocator m_transientAllocator{ 32 * 1024 * 1024 };
 

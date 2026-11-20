@@ -95,6 +95,11 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         else if (std::string_view(argv[i]) == "--smoke-test")
         {
             smokeTest = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+            {
+                maxTestFrames = static_cast<u32>(std::atoi(argv[++i]));
+                if (maxTestFrames == 0) maxTestFrames = 15;
+            }
             RL_LOG_INFO("Running in automated smoke test mode (will render {} frames).", maxTestFrames);
         }
         else if (std::string_view(argv[i]) == "--stress-test")
@@ -114,15 +119,21 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
 
     auto findRoot = [&](const std::string& sub) -> std::filesystem::path {
+        const std::filesystem::path sourceCandidate = (exeDir / ".." / ".." / ".." / sub).lexically_normal();
+        if (std::filesystem::exists(sourceCandidate)) return sourceCandidate;
         if (std::filesystem::exists(sub)) return std::filesystem::absolute(sub);
         if (std::filesystem::exists(exeDir / sub)) return exeDir / sub;
-        if (std::filesystem::exists(exeDir / ".." / ".." / ".." / sub)) return (exeDir / ".." / ".." / ".." / sub).lexically_normal();
         return std::filesystem::current_path() / sub;
     };
 
-    VFS::Mount("assets://", findRoot("assets"));
-    VFS::Mount("shaders://", findRoot("shaders"));
-    VFS::Mount("scripts://", findRoot("scripts"));
+    const auto assetsRoot = findRoot("assets");
+    const auto shadersRoot = findRoot("shaders");
+    const auto scriptsRoot = findRoot("scripts");
+
+    VFS::Mount("assets://", assetsRoot);
+    VFS::Mount("shaders://", shadersRoot);
+    VFS::Mount("shaders/", shadersRoot);
+    VFS::Mount("scripts://", scriptsRoot);
     VFS::PrintMounts();
 
     if (smokeTest)
@@ -182,6 +193,171 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         }
 
         RL_LOG_INFO("Smoke test: PBR slots and vertex/instance sizes validated successfully.");
+
+        {
+            Scene jointTestScene;
+            PhysicsSystem jointPhys;
+
+            Entity entDistA = jointTestScene.CreateEntity("DistA");
+            auto& trDistA = jointTestScene.GetComponent<TransformComponent>(entDistA);
+            trDistA.Position = { 0.0f, 0.0f, 0.0f };
+            auto& rbDistA = jointTestScene.AddComponent<RigidBodyComponent>(entDistA);
+            rbDistA.Type = BodyType::Dynamic;
+            rbDistA.Mass = 1.0f;
+
+            Entity entDistB = jointTestScene.CreateEntity("DistB");
+            auto& trDistB = jointTestScene.GetComponent<TransformComponent>(entDistB);
+            trDistB.Position = { 10.0f, 0.0f, 0.0f };
+            auto& rbDistB = jointTestScene.AddComponent<RigidBodyComponent>(entDistB);
+            rbDistB.Type = BodyType::Dynamic;
+            rbDistB.Mass = 1.0f;
+
+            auto& distJoint = jointTestScene.AddComponent<DistanceJointComponent>(entDistA);
+            distJoint.TargetEntity = entDistB;
+            distJoint.TargetDistance = 4.0f;
+            distJoint.AutoDistance = false;
+            distJoint.Stiffness = 1.0f;
+
+            jointPhys.SolveConstraints(jointTestScene, 1.0f / 60.0f);
+
+            const f32 curDistA = jointTestScene.GetComponent<TransformComponent>(entDistA).Position.x;
+            const f32 curDistB = jointTestScene.GetComponent<TransformComponent>(entDistB).Position.x;
+            const f32 newDist = std::abs(curDistB - curDistA);
+            if (std::abs(newDist - 4.0f) > 0.01f)
+            {
+                RL_LOG_FATAL("DistanceJoint validation failed: distance {} != 4.0 (trA.x={}, trB.x={})", newDist, curDistA, curDistB);
+                return -74;
+            }
+
+            Entity entAutoA = jointTestScene.CreateEntity("AutoA");
+            auto& trAutoA = jointTestScene.GetComponent<TransformComponent>(entAutoA);
+            trAutoA.Position = { 0.0f, 0.0f, 0.0f };
+
+            Entity entAutoB = jointTestScene.CreateEntity("AutoB");
+            auto& trAutoB = jointTestScene.GetComponent<TransformComponent>(entAutoB);
+            trAutoB.Position = { 7.5f, 0.0f, 0.0f };
+
+            auto& autoJoint = jointTestScene.AddComponent<DistanceJointComponent>(entAutoA);
+            autoJoint.TargetEntity = entAutoB;
+            autoJoint.AutoDistance = true;
+
+            jointPhys.SolveConstraints(jointTestScene, 1.0f / 60.0f);
+
+            if (autoJoint.AutoDistance || std::abs(autoJoint.TargetDistance - 7.5f) > 0.01f)
+            {
+                RL_LOG_FATAL("DistanceJoint AutoDistance validation failed: dist {}", autoJoint.TargetDistance);
+                return -75;
+            }
+
+            Entity entStaticAnchor = jointTestScene.CreateEntity("StaticAnchor");
+            jointTestScene.GetComponent<TransformComponent>(entStaticAnchor).Position = { 0.0f, 0.0f, 0.0f };
+            auto& rbStatic = jointTestScene.AddComponent<RigidBodyComponent>(entStaticAnchor);
+            rbStatic.Type = BodyType::Static;
+
+            Entity entDynChild = jointTestScene.CreateEntity("DynChild");
+            jointTestScene.GetComponent<TransformComponent>(entDynChild).Position = { 8.0f, 0.0f, 0.0f };
+            auto& rbDynChild = jointTestScene.AddComponent<RigidBodyComponent>(entDynChild);
+            rbDynChild.Type = BodyType::Dynamic;
+            rbDynChild.Mass = 2.0f;
+
+            auto& distJointStatic = jointTestScene.AddComponent<DistanceJointComponent>(entDynChild);
+            distJointStatic.TargetEntity = entStaticAnchor;
+            distJointStatic.TargetDistance = 3.0f;
+            distJointStatic.AutoDistance = false;
+            distJointStatic.Stiffness = 1.0f;
+
+            jointPhys.SolveConstraints(jointTestScene, 1.0f / 60.0f);
+
+            const f32 staticPosX = jointTestScene.GetComponent<TransformComponent>(entStaticAnchor).Position.x;
+            const f32 dynChildPosX = jointTestScene.GetComponent<TransformComponent>(entDynChild).Position.x;
+            if (std::abs(staticPosX) > 0.001f || std::abs(dynChildPosX - 3.0f) > 0.01f)
+            {
+                RL_LOG_FATAL("DistanceJoint static anchor validation failed: static {}, dyn {}", staticPosX, dynChildPosX);
+                return -76;
+            }
+
+            Entity entHinge = jointTestScene.CreateEntity("HingeBody");
+            jointTestScene.GetComponent<TransformComponent>(entHinge).Position = { 0.0f, 0.0f, 0.0f };
+            auto& rbHinge = jointTestScene.AddComponent<RigidBodyComponent>(entHinge);
+            rbHinge.Type = BodyType::Dynamic;
+            rbHinge.AngularVelocity = { 3.0f, 4.0f, 5.0f };
+
+            auto& hingeJoint = jointTestScene.AddComponent<HingeJointComponent>(entHinge);
+            hingeJoint.TargetEntity = entStaticAnchor;
+            hingeJoint.Anchor = { 0.0f, 0.0f, 0.0f };
+            hingeJoint.Axis = { 0.0f, 1.0f, 0.0f };
+            hingeJoint.EnableLimits = false;
+
+            jointPhys.SolveConstraints(jointTestScene, 1.0f / 60.0f);
+
+            const auto& curRbHinge = jointTestScene.GetComponent<RigidBodyComponent>(entHinge);
+            if (std::abs(curRbHinge.AngularVelocity.x) > 0.01f || std::abs(curRbHinge.AngularVelocity.z) > 0.01f || std::abs(curRbHinge.AngularVelocity.y - 4.0f) > 0.01f)
+            {
+                RL_LOG_FATAL("HingeJoint angular axis projection failed: angVel ({}, {}, {})", curRbHinge.AngularVelocity.x, curRbHinge.AngularVelocity.y, curRbHinge.AngularVelocity.z);
+                return -77;
+            }
+
+            hingeJoint.EnableLimits = true;
+            hingeJoint.LowerAngleLimit = -0.5f;
+            hingeJoint.UpperAngleLimit = 0.5f;
+            jointTestScene.GetComponent<TransformComponent>(entHinge).Rotation = { 0.0f, 1.5f, 0.0f };
+            jointTestScene.GetComponent<RigidBodyComponent>(entHinge).AngularVelocity = { 0.0f, 2.0f, 0.0f };
+
+            jointPhys.SolveConstraints(jointTestScene, 1.0f / 60.0f);
+
+            const auto& curTrHinge = jointTestScene.GetComponent<TransformComponent>(entHinge);
+            const auto& curRbHingeAfter = jointTestScene.GetComponent<RigidBodyComponent>(entHinge);
+            if (curTrHinge.Rotation.y > 0.51f || curRbHingeAfter.AngularVelocity.y > 0.01f)
+            {
+                RL_LOG_FATAL("HingeJoint limit enforcement failed: rotY {}, angVelY {}", curTrHinge.Rotation.y, curRbHingeAfter.AngularVelocity.y);
+                return -78;
+            }
+
+            Entity entFixed = jointTestScene.CreateEntity("FixedBody");
+            jointTestScene.GetComponent<TransformComponent>(entFixed).Position = { 0.0f, 0.0f, 0.0f };
+            auto& rbFixed = jointTestScene.AddComponent<RigidBodyComponent>(entFixed);
+            rbFixed.Type = BodyType::Dynamic;
+            rbFixed.Mass = 1.0f;
+
+            auto& fixedJoint = jointTestScene.AddComponent<FixedJointComponent>(entFixed);
+            fixedJoint.TargetEntity = entStaticAnchor;
+            fixedJoint.RelativeOffset = { 2.0f, 3.0f, 4.0f };
+            fixedJoint.RelativeRotation = { 0.1f, 0.2f, 0.3f };
+            fixedJoint.BreakForce = 0.0f;
+
+            jointPhys.SolveConstraints(jointTestScene, 1.0f / 60.0f);
+
+            const auto& curTrFixed = jointTestScene.GetComponent<TransformComponent>(entFixed);
+            if (std::abs(curTrFixed.Position.x - 2.0f) > 0.01f ||
+                std::abs(curTrFixed.Position.y - 3.0f) > 0.01f ||
+                std::abs(curTrFixed.Position.z - 4.0f) > 0.01f)
+            {
+                RL_LOG_FATAL("FixedJoint lock validation failed: pos ({}, {}, {})", curTrFixed.Position.x, curTrFixed.Position.y, curTrFixed.Position.z);
+                return -79;
+            }
+
+            bool breakTriggerFired = false;
+            auto breakSub = EventBus::Subscribe<PhysicsTriggerEvent>([&](const PhysicsTriggerEvent& ev) {
+                if (ev.triggerEntity == entFixed && ev.state == TriggerEvent::State::Exit)
+                {
+                    breakTriggerFired = true;
+                }
+            });
+
+            jointTestScene.GetComponent<TransformComponent>(entFixed).Position = { 1000.0f, 0.0f, 0.0f };
+            fixedJoint.BreakForce = 5.0f;
+            fixedJoint.IsBroken = false;
+
+            jointPhys.SolveConstraints(jointTestScene, 1.0f / 60.0f);
+
+            if (!fixedJoint.IsBroken || !breakTriggerFired)
+            {
+                RL_LOG_FATAL("FixedJoint break validation failed: isBroken {}, triggerFired {}", fixedJoint.IsBroken, breakTriggerFired);
+                return -80;
+            }
+
+            RL_LOG_INFO("Smoke test: DistanceJoint, HingeJoint, and FixedJoint constraints validated successfully.");
+        }
     }
 
     WindowDesc windowDesc{
@@ -1052,6 +1228,10 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     while (true)
     {
         Input::NewFrame();
+        if (Input::IsKeyPressed(KeyCode::F5))
+        {
+            renderSystem.RequestShaderReload();
+        }
         EventBus::DispatchDeferred();
         AudioEngine::Get().Update();
 

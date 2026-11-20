@@ -3,6 +3,7 @@
 #include "Scene/Components.hpp"
 #include "Core/Events/EventBus.hpp"
 #include "Core/Events/CommonEvents.hpp"
+#include "Core/Logger.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -48,6 +49,47 @@ namespace RL
         inline DirectX::XMFLOAT3 Mul(const DirectX::XMFLOAT3& a, f32 s) noexcept
         {
             return { a.x * s, a.y * s, a.z * s };
+        }
+
+        inline f32 LengthSq(const DirectX::XMFLOAT3& a) noexcept
+        {
+            return Dot(a, a);
+        }
+
+        inline f32 Length(const DirectX::XMFLOAT3& a) noexcept
+        {
+            return std::sqrt(Dot(a, a));
+        }
+
+        inline DirectX::XMFLOAT3 Normalize(const DirectX::XMFLOAT3& a) noexcept
+        {
+            const f32 len = Length(a);
+            if (len > 1e-6f)
+            {
+                return Mul(a, 1.0f / len);
+            }
+            return { 0.0f, 1.0f, 0.0f };
+        }
+
+        inline DirectX::XMFLOAT3 RotateVector(const DirectX::XMFLOAT3& v, const DirectX::XMFLOAT3& rotEuler) noexcept
+        {
+            const auto R = DirectX::XMMatrixRotationRollPitchYaw(rotEuler.x, rotEuler.y, rotEuler.z);
+            const auto vec = DirectX::XMVector3TransformNormal(DirectX::XMVectorSet(v.x, v.y, v.z, 0.0f), R);
+            return { DirectX::XMVectorGetX(vec), DirectX::XMVectorGetY(vec), DirectX::XMVectorGetZ(vec) };
+        }
+
+        inline DirectX::XMFLOAT3 GetWorldPoint(const TransformComponent& tr, const DirectX::XMFLOAT3& localPoint) noexcept
+        {
+            const auto mat = tr.GetWorldMatrix();
+            const auto pt = DirectX::XMVector3Transform(DirectX::XMVectorSet(localPoint.x, localPoint.y, localPoint.z, 1.0f), mat);
+            return { DirectX::XMVectorGetX(pt), DirectX::XMVectorGetY(pt), DirectX::XMVectorGetZ(pt) };
+        }
+
+        inline DirectX::XMFLOAT3 GetWorldDirection(const TransformComponent& tr, const DirectX::XMFLOAT3& localDir) noexcept
+        {
+            const auto R = DirectX::XMMatrixRotationRollPitchYaw(tr.Rotation.x, tr.Rotation.y, tr.Rotation.z);
+            const auto dir = DirectX::XMVector3TransformNormal(DirectX::XMVectorSet(localDir.x, localDir.y, localDir.z, 0.0f), R);
+            return Normalize({ DirectX::XMVectorGetX(dir), DirectX::XMVectorGetY(dir), DirectX::XMVectorGetZ(dir) });
         }
 
         struct OBB
@@ -180,6 +222,26 @@ namespace RL
                 axes[0].y * invItLoc.x + axes[1].y * invItLoc.y + axes[2].y * invItLoc.z,
                 axes[0].z * invItLoc.x + axes[1].z * invItLoc.y + axes[2].z * invItLoc.z
             };
+        }
+
+        inline DirectX::XMFLOAT3 GetInverseInertiaTensor(
+            const DirectX::XMFLOAT3& torque,
+            const TransformComponent& tr,
+            const BoxColliderComponent* box,
+            const SphereColliderComponent* sphere,
+            f32 mass) noexcept
+        {
+            const f32 m = std::max(0.001f, mass);
+            if (sphere && !box)
+            {
+                const f32 maxScale = std::max({ std::abs(tr.Scale.x), std::abs(tr.Scale.y), std::abs(tr.Scale.z) });
+                const f32 r = std::max(1e-4f, sphere->Radius * maxScale);
+                const f32 Isph = 0.4f * m * r * r;
+                const f32 invI = 1.0f / std::max(1e-4f, Isph);
+                return Mul(torque, invI);
+            }
+            OBB obb = BuildOBB(tr, box);
+            return TransformInverseInertia(torque, obb.Axes, obb.Extents, m);
         }
 
         inline bool SweptAABB(
@@ -582,6 +644,7 @@ namespace RL
     {
         m_initialTransforms.clear();
         m_initialRotations.clear();
+        m_hingeStates.clear();
         m_activeTriggerPairs.clear();
         m_triggerEvents.clear();
         m_accumulator = 0.0f;
@@ -695,6 +758,7 @@ namespace RL
         }
         m_activeTriggerPairs.clear();
         m_triggerEvents.clear();
+        m_hingeStates.clear();
         m_accumulator = 0.0f;
     }
 
@@ -768,7 +832,11 @@ namespace RL
             bodies.push_back(b);
         }
 
-        if (bodies.empty()) return;
+        if (bodies.empty())
+        {
+            SolveConstraints(scene, dt);
+            return;
+        }
 
         constexpr int kSubSteps = 2;
         const f32 subDt = dt / static_cast<f32>(kSubSteps);
@@ -1309,6 +1377,7 @@ namespace RL
             }
 
             finalActiveTriggerPairs = std::move(stepActiveTriggers);
+            SolveConstraints(scene, subDt);
         }
 
         std::vector<TriggerEvent> newEvents;
@@ -1361,6 +1430,438 @@ namespace RL
                 ev.EventState
             });
             m_triggerEvents.push_back(std::move(ev));
+        }
+    }
+
+    void PhysicsSystem::SolveConstraints(Scene& scene, f32 dt)
+    {
+        if (dt <= 0.0f) return;
+
+        auto* trPool = scene.GetPool<TransformComponent>();
+        if (!trPool) return;
+
+        auto* rbPool = scene.GetPool<RigidBodyComponent>();
+        auto* boxPool = scene.GetPool<BoxColliderComponent>();
+        auto* spherePool = scene.GetPool<SphereColliderComponent>();
+
+        auto* distJointPool = scene.GetPool<DistanceJointComponent>();
+        auto* hingeJointPool = scene.GetPool<HingeJointComponent>();
+        auto* fixedJointPool = scene.GetPool<FixedJointComponent>();
+
+        if (!distJointPool && !hingeJointPool && !fixedJointPool) return;
+
+        constexpr int kConstraintIterations = 2;
+        for (int iter = 0; iter < kConstraintIterations; ++iter)
+        {
+            if (distJointPool)
+            {
+                const usize count = distJointPool->Size();
+                const auto entities = distJointPool->GetEntities();
+                auto data = distJointPool->GetData();
+
+                for (usize i = 0; i < count; ++i)
+                {
+                    Entity entA = scene.GetEntityFromIndex(entities[i]);
+                    if (!scene.IsValid(entA)) continue;
+
+                    auto* trA = trPool->TryGet(entA.GetIndex());
+                    if (!trA) continue;
+
+                    auto& joint = data[i];
+                    const bool hasTarget = scene.IsValid(joint.TargetEntity);
+                    auto* trB = hasTarget ? trPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+
+                    const DirectX::XMFLOAT3 worldAnchorA = GetWorldPoint(*trA, joint.AnchorA);
+                    const DirectX::XMFLOAT3 worldAnchorB = (hasTarget && trB) ? GetWorldPoint(*trB, joint.AnchorB) : joint.AnchorB;
+
+                    const DirectX::XMFLOAT3 delta = Sub(worldAnchorB, worldAnchorA);
+                    const f32 currentDistance = Length(delta);
+
+                    if (joint.AutoDistance)
+                    {
+                        joint.TargetDistance = currentDistance;
+                        joint.AutoDistance = false;
+                    }
+
+                    const f32 error = currentDistance - joint.TargetDistance;
+                    if (std::abs(error) < 1e-6f) continue;
+
+                    DirectX::XMFLOAT3 n{ 0.0f, 1.0f, 0.0f };
+                    if (currentDistance > 1e-6f)
+                    {
+                        n = Mul(delta, 1.0f / currentDistance);
+                    }
+
+                    auto* rbA = rbPool ? rbPool->TryGet(entA.GetIndex()) : nullptr;
+                    auto* rbB = (hasTarget && rbPool) ? rbPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+
+                    const bool isDynA = (rbA != nullptr && rbA->Type == BodyType::Dynamic);
+                    const bool isDynB = (hasTarget && rbB != nullptr && rbB->Type == BodyType::Dynamic);
+
+                    if (!isDynA && !isDynB) continue;
+
+                    const f32 invMassA = isDynA ? (1.0f / std::max(0.001f, rbA->Mass)) : 0.0f;
+                    const f32 invMassB = isDynB ? (1.0f / std::max(0.001f, rbB->Mass)) : 0.0f;
+                    const f32 invMassSum = invMassA + invMassB;
+                    if (invMassSum < 1e-6f) continue;
+
+                    const f32 stiffness = (joint.Stiffness <= 0.0f) ? 1.0f : std::clamp(joint.Stiffness, 0.0f, 1.0f);
+                    const f32 posCorr = error * stiffness;
+
+                    if (isDynA)
+                    {
+                        trA->Position = Add(trA->Position, Mul(n, posCorr * (invMassA / invMassSum)));
+                    }
+                    if (isDynB && trB)
+                    {
+                        trB->Position = Sub(trB->Position, Mul(n, posCorr * (invMassB / invMassSum)));
+                    }
+
+                    const DirectX::XMFLOAT3 rA = Sub(worldAnchorA, trA->Position);
+                    const DirectX::XMFLOAT3 rB = (hasTarget && trB) ? Sub(worldAnchorB, trB->Position) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+
+                    const DirectX::XMFLOAT3 vA = isDynA ? Add(rbA->LinearVelocity, Cross(rbA->AngularVelocity, rA)) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const DirectX::XMFLOAT3 vB = isDynB ? Add(rbB->LinearVelocity, Cross(rbB->AngularVelocity, rB)) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const f32 relVel = Dot(Sub(vB, vA), n);
+
+                    const DirectX::XMFLOAT3 tA = Cross(rA, n);
+                    const auto* boxA = boxPool ? boxPool->TryGet(entA.GetIndex()) : nullptr;
+                    const auto* sphereA = spherePool ? spherePool->TryGet(entA.GetIndex()) : nullptr;
+                    const DirectX::XMFLOAT3 invItA = isDynA ? GetInverseInertiaTensor(tA, *trA, boxA, sphereA, rbA->Mass) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const f32 rotA = isDynA ? Dot(tA, invItA) : 0.0f;
+
+                    const auto* boxB = (hasTarget && boxPool) ? boxPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+                    const auto* sphereB = (hasTarget && spherePool) ? spherePool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+                    const DirectX::XMFLOAT3 tB = Cross(rB, n);
+                    const DirectX::XMFLOAT3 invItB = isDynB ? GetInverseInertiaTensor(tB, *trB, boxB, sphereB, rbB->Mass) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const f32 rotB = isDynB ? Dot(tB, invItB) : 0.0f;
+
+                    const f32 effMassInv = invMassSum + rotA + rotB;
+                    if (effMassInv > 1e-6f)
+                    {
+                        const f32 damping = std::clamp(joint.Damping, 0.0f, 1.0f) * relVel;
+                        const f32 impulseMag = -(relVel + (stiffness * error) / dt + damping) / effMassInv;
+                        const DirectX::XMFLOAT3 impulse = Mul(n, impulseMag);
+
+                        if (isDynA)
+                        {
+                            rbA->LinearVelocity = Sub(rbA->LinearVelocity, Mul(impulse, invMassA));
+                            rbA->AngularVelocity = Sub(rbA->AngularVelocity, Mul(invItA, impulseMag));
+                        }
+                        if (isDynB)
+                        {
+                            rbB->LinearVelocity = Add(rbB->LinearVelocity, Mul(impulse, invMassB));
+                            rbB->AngularVelocity = Add(rbB->AngularVelocity, Mul(invItB, impulseMag));
+                        }
+                    }
+                }
+            }
+
+            if (hingeJointPool)
+            {
+                const usize count = hingeJointPool->Size();
+                const auto entities = hingeJointPool->GetEntities();
+                auto data = hingeJointPool->GetData();
+
+                for (usize i = 0; i < count; ++i)
+                {
+                    Entity entA = scene.GetEntityFromIndex(entities[i]);
+                    if (!scene.IsValid(entA)) continue;
+
+                    auto* trA = trPool->TryGet(entA.GetIndex());
+                    if (!trA) continue;
+
+                    auto& joint = data[i];
+                    const bool hasTarget = scene.IsValid(joint.TargetEntity);
+                    auto* trB = hasTarget ? trPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+
+                    const DirectX::XMFLOAT3 worldAnchorA = GetWorldPoint(*trA, joint.Anchor);
+
+                    auto& state = m_hingeStates[entA.GetID()];
+                    if (!state.Initialized)
+                    {
+                        if (hasTarget && trB)
+                        {
+                            const DirectX::XMFLOAT3 delta = Sub(worldAnchorA, trB->Position);
+                            const auto invRotB = DirectX::XMMatrixTranspose(DirectX::XMMatrixRotationRollPitchYaw(trB->Rotation.x, trB->Rotation.y, trB->Rotation.z));
+                            const auto localB = DirectX::XMVector3TransformNormal(DirectX::XMVectorSet(delta.x, delta.y, delta.z, 0.0f), invRotB);
+                            const DirectX::XMFLOAT3 scaleB{
+                                std::abs(trB->Scale.x) > 1e-4f ? trB->Scale.x : 1.0f,
+                                std::abs(trB->Scale.y) > 1e-4f ? trB->Scale.y : 1.0f,
+                                std::abs(trB->Scale.z) > 1e-4f ? trB->Scale.z : 1.0f
+                            };
+                            state.LocalAnchorB = {
+                                DirectX::XMVectorGetX(localB) / scaleB.x,
+                                DirectX::XMVectorGetY(localB) / scaleB.y,
+                                DirectX::XMVectorGetZ(localB) / scaleB.z
+                            };
+                        }
+                        state.WorldAnchor = worldAnchorA;
+                        state.Initialized = true;
+                    }
+
+                    const DirectX::XMFLOAT3 worldAnchorB = (hasTarget && trB) ? GetWorldPoint(*trB, state.LocalAnchorB) : state.WorldAnchor;
+
+                    auto* rbA = rbPool ? rbPool->TryGet(entA.GetIndex()) : nullptr;
+                    auto* rbB = (hasTarget && rbPool) ? rbPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+
+                    const bool isDynA = (rbA != nullptr && rbA->Type == BodyType::Dynamic);
+                    const bool isDynB = (hasTarget && rbB != nullptr && rbB->Type == BodyType::Dynamic);
+
+                    if (!isDynA && !isDynB) continue;
+
+                    const f32 invMassA = isDynA ? (1.0f / std::max(0.001f, rbA->Mass)) : 0.0f;
+                    const f32 invMassB = isDynB ? (1.0f / std::max(0.001f, rbB->Mass)) : 0.0f;
+                    const f32 invMassSum = invMassA + invMassB;
+                    if (invMassSum < 1e-6f) continue;
+
+                    const DirectX::XMFLOAT3 posError = Sub(worldAnchorB, worldAnchorA);
+                    if (isDynA)
+                    {
+                        trA->Position = Add(trA->Position, Mul(posError, invMassA / invMassSum));
+                    }
+                    if (isDynB && trB)
+                    {
+                        trB->Position = Sub(trB->Position, Mul(posError, invMassB / invMassSum));
+                    }
+
+                    const DirectX::XMFLOAT3 rA = Sub(worldAnchorA, trA->Position);
+                    const DirectX::XMFLOAT3 rB = (hasTarget && trB) ? Sub(worldAnchorB, trB->Position) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+
+                    const DirectX::XMFLOAT3 vA = isDynA ? Add(rbA->LinearVelocity, Cross(rbA->AngularVelocity, rA)) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const DirectX::XMFLOAT3 vB = isDynB ? Add(rbB->LinearVelocity, Cross(rbB->AngularVelocity, rB)) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const DirectX::XMFLOAT3 vRel = Sub(vB, vA);
+
+                    const DirectX::XMFLOAT3 linImpulse = Mul(Add(vRel, Mul(posError, 0.2f / dt)), 1.0f / invMassSum);
+
+                    const auto* boxA = boxPool ? boxPool->TryGet(entA.GetIndex()) : nullptr;
+                    const auto* sphereA = spherePool ? spherePool->TryGet(entA.GetIndex()) : nullptr;
+                    const auto* boxB = (hasTarget && boxPool) ? boxPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+                    const auto* sphereB = (hasTarget && spherePool) ? spherePool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+
+                    if (isDynA)
+                    {
+                        rbA->LinearVelocity = Add(rbA->LinearVelocity, Mul(linImpulse, invMassA));
+                        rbA->AngularVelocity = Add(rbA->AngularVelocity, GetInverseInertiaTensor(Cross(rA, linImpulse), *trA, boxA, sphereA, rbA->Mass));
+                    }
+                    if (isDynB)
+                    {
+                        rbB->LinearVelocity = Sub(rbB->LinearVelocity, Mul(linImpulse, invMassB));
+                        rbB->AngularVelocity = Sub(rbB->AngularVelocity, GetInverseInertiaTensor(Cross(rB, Mul(linImpulse, -1.0f)), *trB, boxB, sphereB, rbB->Mass));
+                    }
+
+                    const DirectX::XMFLOAT3 axisWorld = GetWorldDirection(*trA, joint.Axis);
+
+                    const DirectX::XMFLOAT3 angVelB = isDynB ? rbB->AngularVelocity : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const DirectX::XMFLOAT3 relAngVel = Sub(isDynA ? rbA->AngularVelocity : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f }, angVelB);
+
+                    const f32 projSpeed = Dot(relAngVel, axisWorld);
+                    const DirectX::XMFLOAT3 parallelAngVel = Mul(axisWorld, projSpeed);
+                    const DirectX::XMFLOAT3 perpAngVel = Sub(relAngVel, parallelAngVel);
+
+                    if (isDynA)
+                    {
+                        rbA->AngularVelocity = Sub(rbA->AngularVelocity, Mul(perpAngVel, invMassA / invMassSum));
+                    }
+                    if (isDynB)
+                    {
+                        rbB->AngularVelocity = Add(rbB->AngularVelocity, Mul(perpAngVel, invMassB / invMassSum));
+                    }
+
+                    if (joint.EnableMotor && isDynA)
+                    {
+                        const f32 currentMotorSpeed = Dot(Sub(rbA->AngularVelocity, angVelB), axisWorld);
+                        const f32 speedDiff = joint.MotorSpeed - currentMotorSpeed;
+                        f32 motorTorqueImpulse = speedDiff / invMassSum;
+                        if (joint.MaxMotorTorque > 0.0f)
+                        {
+                            const f32 maxImp = joint.MaxMotorTorque * dt;
+                            motorTorqueImpulse = std::clamp(motorTorqueImpulse, -maxImp, maxImp);
+                        }
+                        rbA->AngularVelocity = Add(rbA->AngularVelocity, Mul(axisWorld, motorTorqueImpulse * invMassA));
+                        if (isDynB)
+                        {
+                            rbB->AngularVelocity = Sub(rbB->AngularVelocity, Mul(axisWorld, motorTorqueImpulse * invMassB));
+                        }
+                    }
+
+                    if (joint.EnableLimits)
+                    {
+                        DirectX::XMFLOAT3 ref{ 0.0f, 1.0f, 0.0f };
+                        if (std::abs(axisWorld.y) > 0.9f)
+                        {
+                            ref = { 1.0f, 0.0f, 0.0f };
+                        }
+                        const DirectX::XMFLOAT3 u0 = Normalize(Cross(axisWorld, ref));
+
+                        const DirectX::XMFLOAT3 uA = RotateVector(u0, trA->Rotation);
+                        const DirectX::XMFLOAT3 uB = (hasTarget && trB) ? RotateVector(u0, trB->Rotation) : u0;
+
+                        const DirectX::XMFLOAT3 uAproj = Normalize(Sub(uA, Mul(axisWorld, Dot(uA, axisWorld))));
+                        const DirectX::XMFLOAT3 uBproj = Normalize(Sub(uB, Mul(axisWorld, Dot(uB, axisWorld))));
+
+                        const f32 cosAngle = std::clamp(Dot(uBproj, uAproj), -1.0f, 1.0f);
+                        const f32 sinAngle = Dot(Cross(uBproj, uAproj), axisWorld);
+                        const f32 angle = std::atan2(sinAngle, cosAngle);
+
+                        if (angle < joint.LowerAngleLimit)
+                        {
+                            const f32 angleErr = joint.LowerAngleLimit - angle;
+                            if (isDynA)
+                            {
+                                trA->Rotation = Add(trA->Rotation, Mul(axisWorld, angleErr * (invMassA / invMassSum)));
+                            }
+                            if (isDynB && trB)
+                            {
+                                trB->Rotation = Sub(trB->Rotation, Mul(axisWorld, angleErr * (invMassB / invMassSum)));
+                            }
+                            const f32 speedAlongAxis = Dot(Sub(isDynA ? rbA->AngularVelocity : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f }, angVelB), axisWorld);
+                            if (speedAlongAxis < 0.0f)
+                            {
+                                if (isDynA)
+                                {
+                                    rbA->AngularVelocity = Sub(rbA->AngularVelocity, Mul(axisWorld, speedAlongAxis * (invMassA / invMassSum)));
+                                }
+                                if (isDynB)
+                                {
+                                    rbB->AngularVelocity = Add(rbB->AngularVelocity, Mul(axisWorld, speedAlongAxis * (invMassB / invMassSum)));
+                                }
+                            }
+                        }
+                        else if (angle > joint.UpperAngleLimit)
+                        {
+                            const f32 angleErr = angle - joint.UpperAngleLimit;
+                            if (isDynA)
+                            {
+                                trA->Rotation = Sub(trA->Rotation, Mul(axisWorld, angleErr * (invMassA / invMassSum)));
+                            }
+                            if (isDynB && trB)
+                            {
+                                trB->Rotation = Add(trB->Rotation, Mul(axisWorld, angleErr * (invMassB / invMassSum)));
+                            }
+                            const f32 speedAlongAxis = Dot(Sub(isDynA ? rbA->AngularVelocity : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f }, angVelB), axisWorld);
+                            if (speedAlongAxis > 0.0f)
+                            {
+                                if (isDynA)
+                                {
+                                    rbA->AngularVelocity = Sub(rbA->AngularVelocity, Mul(axisWorld, speedAlongAxis * (invMassA / invMassSum)));
+                                }
+                                if (isDynB)
+                                {
+                                    rbB->AngularVelocity = Add(rbB->AngularVelocity, Mul(axisWorld, speedAlongAxis * (invMassB / invMassSum)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (fixedJointPool)
+            {
+                const usize count = fixedJointPool->Size();
+                const auto entities = fixedJointPool->GetEntities();
+                auto data = fixedJointPool->GetData();
+
+                for (usize i = 0; i < count; ++i)
+                {
+                    auto& joint = data[i];
+                    if (joint.IsBroken) continue;
+
+                    Entity entA = scene.GetEntityFromIndex(entities[i]);
+                    if (!scene.IsValid(entA)) continue;
+
+                    auto* trA = trPool->TryGet(entA.GetIndex());
+                    if (!trA) continue;
+
+                    const bool hasTarget = scene.IsValid(joint.TargetEntity);
+                    auto* trB = hasTarget ? trPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+
+                    DirectX::XMFLOAT3 targetPos = joint.RelativeOffset;
+                    DirectX::XMFLOAT3 targetRot = joint.RelativeRotation;
+                    DirectX::XMFLOAT3 targetLinVel{ 0.0f, 0.0f, 0.0f };
+                    DirectX::XMFLOAT3 targetAngVel{ 0.0f, 0.0f, 0.0f };
+
+                    auto* rbA = rbPool ? rbPool->TryGet(entA.GetIndex()) : nullptr;
+                    auto* rbB = (hasTarget && rbPool) ? rbPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+
+                    const bool isDynA = (rbA != nullptr && rbA->Type == BodyType::Dynamic);
+                    const bool isDynB = (hasTarget && rbB != nullptr && rbB->Type == BodyType::Dynamic);
+
+                    if (hasTarget && trB)
+                    {
+                        targetRot = Add(trB->Rotation, joint.RelativeRotation);
+                        const DirectX::XMFLOAT3 rotatedOffset = RotateVector(joint.RelativeOffset, trB->Rotation);
+                        targetPos = Add(trB->Position, rotatedOffset);
+                        if (isDynB)
+                        {
+                            targetLinVel = Add(rbB->LinearVelocity, Cross(rbB->AngularVelocity, rotatedOffset));
+                            targetAngVel = rbB->AngularVelocity;
+                        }
+                    }
+
+                    const DirectX::XMFLOAT3 posError = Sub(targetPos, trA->Position);
+                    DirectX::XMFLOAT3 rotError = Sub(targetRot, trA->Rotation);
+
+                    while (rotError.x > 3.14159265f) rotError.x -= 6.2831853f;
+                    while (rotError.x < -3.14159265f) rotError.x += 6.2831853f;
+                    while (rotError.y > 3.14159265f) rotError.y -= 6.2831853f;
+                    while (rotError.y < -3.14159265f) rotError.y += 6.2831853f;
+                    while (rotError.z > 3.14159265f) rotError.z -= 6.2831853f;
+                    while (rotError.z < -3.14159265f) rotError.z += 6.2831853f;
+
+                    const f32 invMassA = isDynA ? (1.0f / std::max(0.001f, rbA->Mass)) : 0.0f;
+                    const f32 invMassB = isDynB ? (1.0f / std::max(0.001f, rbB->Mass)) : 0.0f;
+                    const f32 invMassSum = invMassA + invMassB;
+
+                    if (invMassSum < 1e-6f)
+                    {
+                        trA->Position = targetPos;
+                        trA->Rotation = targetRot;
+                        continue;
+                    }
+
+                    const DirectX::XMFLOAT3 vA = isDynA ? rbA->LinearVelocity : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const DirectX::XMFLOAT3 deltaV = Sub(targetLinVel, vA);
+
+                    const DirectX::XMFLOAT3 linImpulse = Mul(Add(deltaV, Mul(posError, 1.0f / dt)), 1.0f / invMassSum);
+                    const f32 impulseMag = Length(linImpulse);
+
+                    if (joint.BreakForce > 0.0f && impulseMag > joint.BreakForce)
+                    {
+                        joint.IsBroken = true;
+                        EventBus::Publish(PhysicsTriggerEvent{
+                            entA,
+                            joint.TargetEntity,
+                            TriggerEvent::State::Exit
+                        });
+                        RL_LOG_INFO("FixedJoint broke between entity {} and target entity {}", entA.GetIndex(), joint.TargetEntity.GetIndex());
+                        continue;
+                    }
+
+                    const f32 wA = invMassA / invMassSum;
+                    const f32 wB = invMassB / invMassSum;
+
+                    if (isDynA)
+                    {
+                        trA->Position = Add(trA->Position, Mul(posError, wA));
+                        trA->Rotation = Add(trA->Rotation, Mul(rotError, wA));
+                        rbA->LinearVelocity = Add(rbA->LinearVelocity, Mul(linImpulse, invMassA));
+                        rbA->AngularVelocity = targetAngVel;
+                    }
+                    else
+                    {
+                        trA->Position = targetPos;
+                        trA->Rotation = targetRot;
+                    }
+
+                    if (isDynB && trB)
+                    {
+                        trB->Position = Sub(trB->Position, Mul(posError, wB));
+                        trB->Rotation = Sub(trB->Rotation, Mul(rotError, wB));
+                        rbB->LinearVelocity = Sub(rbB->LinearVelocity, Mul(linImpulse, invMassB));
+                    }
+                }
+            }
         }
     }
 

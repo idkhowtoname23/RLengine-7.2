@@ -303,28 +303,70 @@ namespace RL
                     modelData.Meshes.push_back(std::move(*meshRes));
                 }
 
-                if (prim.material && prim.material->has_pbr_metallic_roughness)
+                if (prim.material)
                 {
-                    const auto& pbr = prim.material->pbr_metallic_roughness;
-                    if (pbr.base_color_texture.texture && pbr.base_color_texture.texture->image)
-                    {
-                        const char* uri = pbr.base_color_texture.texture->image->uri;
-                        if (uri)
+                    auto resolveTextureUri = [&](const char* uri) -> std::string {
+                        if (!uri) return "";
+                        std::string uriStr(uri);
+                        if (uriStr.find(':') != std::string::npos) return "";
+                        std::error_code ec;
+                        const std::filesystem::path fullTexPath = std::filesystem::weakly_canonical(modelDir / uri, ec);
+                        const auto rel = fullTexPath.lexically_relative(modelDir);
+                        const std::string relStr = rel.empty() ? "" : rel.string();
+                        if (!ec && !relStr.starts_with("..") && !rel.is_absolute())
                         {
-                            std::string uriStr(uri);
-                            if (uriStr.find(':') == std::string::npos)
+                            return fullTexPath.string();
+                        }
+                        return "";
+                    };
+
+                    if (prim.material->has_pbr_metallic_roughness)
+                    {
+                        const auto& pbr = prim.material->pbr_metallic_roughness;
+                        if (pbr.base_color_texture.texture && pbr.base_color_texture.texture->image)
+                        {
+                            std::string tex = resolveTextureUri(pbr.base_color_texture.texture->image->uri);
+                            if (!tex.empty())
                             {
-                                std::error_code ec;
-                                const std::filesystem::path fullTexPath = std::filesystem::weakly_canonical(modelDir / uri, ec);
-                                const auto rel = fullTexPath.lexically_relative(modelDir);
-                                const std::string relStr = rel.empty() ? "" : rel.string();
-                                if (!ec && !relStr.starts_with("..") && !rel.is_absolute())
-                                {
-                                    modelData.TexturePaths.push_back(fullTexPath.string());
-                                }
+                                modelData.AlbedoTexturePath = tex;
+                                modelData.TexturePaths.push_back(tex);
                             }
                         }
+                        if (pbr.metallic_roughness_texture.texture && pbr.metallic_roughness_texture.texture->image)
+                        {
+                            std::string tex = resolveTextureUri(pbr.metallic_roughness_texture.texture->image->uri);
+                            if (!tex.empty())
+                            {
+                                modelData.MetallicRoughnessMapPath = tex;
+                            }
+                        }
+                        modelData.Metallic = pbr.metallic_factor;
+                        modelData.Roughness = pbr.roughness_factor;
                     }
+
+                    if (prim.material->normal_texture.texture && prim.material->normal_texture.texture->image)
+                    {
+                        std::string tex = resolveTextureUri(prim.material->normal_texture.texture->image->uri);
+                        if (!tex.empty())
+                        {
+                            modelData.NormalMapPath = tex;
+                        }
+                    }
+
+                    if (prim.material->emissive_texture.texture && prim.material->emissive_texture.texture->image)
+                    {
+                        std::string tex = resolveTextureUri(prim.material->emissive_texture.texture->image->uri);
+                        if (!tex.empty())
+                        {
+                            modelData.EmissiveMapPath = tex;
+                        }
+                    }
+
+                    modelData.EmissiveColor = {
+                        prim.material->emissive_factor[0],
+                        prim.material->emissive_factor[1],
+                        prim.material->emissive_factor[2]
+                    };
                 }
             }
         }

@@ -4,6 +4,8 @@
 #include "Graphics/DX12/ShaderCompiler.hpp"
 #include "Graphics/DX12/DescriptorManager.hpp"
 #include "Graphics/DX12/TextureManager.hpp"
+#include "Platform/FileSystem/FileWatcher.hpp"
+#include "Platform/FileSystem/VFS.hpp"
 #include "Core/Logger.hpp"
 #include "Core/Threading/ThreadPool.hpp"
 #include "Core/Memory/MemoryStats.hpp"
@@ -258,141 +260,83 @@ namespace RL
         if (shaderCompiler)
         {
             auto resolveShader = [](const std::string& rel) -> std::filesystem::path {
+                if (rel.find("://") != std::string::npos)
+                {
+                    if (const auto vfsRes = VFS::Resolve(rel)) return *vfsRes;
+                }
+                const std::string filename = std::filesystem::path(rel).filename().string();
+                if (const auto vfsRes = VFS::Resolve("shaders://" + filename)) return *vfsRes;
+                if (const auto vfsRes = VFS::Resolve(rel)) return *vfsRes;
                 if (std::filesystem::exists(rel)) return rel;
                 wchar_t exePathBuf[MAX_PATH];
                 GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
                 const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
                 if (std::filesystem::exists(exeDir / rel)) return exeDir / rel;
+                if (std::filesystem::exists(exeDir / "shaders" / filename)) return exeDir / "shaders" / filename;
                 if (std::filesystem::exists(exeDir / ".." / rel)) return exeDir / ".." / rel;
-                if (std::filesystem::exists(exeDir / ".." / ".." / rel)) return (exeDir / ".." / ".." / rel).lexically_normal();
                 if (std::filesystem::exists(exeDir / ".." / ".." / ".." / rel)) return (exeDir / ".." / ".." / ".." / rel).lexically_normal();
+                if (std::filesystem::exists(exeDir / ".." / ".." / ".." / "shaders" / filename)) return (exeDir / ".." / ".." / ".." / "shaders" / filename).lexically_normal();
                 if (std::filesystem::exists("../" + rel)) return "../" + rel;
                 if (std::filesystem::exists("../../" + rel)) return "../../" + rel;
                 return rel;
             };
 
-            const auto meshShaderPath = resolveShader("shaders/mesh3d.hlsl");
-            auto meshVsBlob = shaderCompiler->CompileVertexShader(meshShaderPath, "VSMain", "6_5");
-            auto meshPsBlob = shaderCompiler->CompilePixelShader(meshShaderPath, "PSMain", "6_5");
-
-            const D3D12_INPUT_ELEMENT_DESC meshLayout[] = {
-                { "POSITION",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(MeshVertex, Position),    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "NORMAL",       0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(MeshVertex, Normal),      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "TEXCOORD",     0, DXGI_FORMAT_R32G32_FLOAT,       0, offsetof(MeshVertex, UV),          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "COLOR",        0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(MeshVertex, Color),       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "TANGENT",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(MeshVertex, Tangent),     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_UINT,  0, offsetof(MeshVertex, BoneIndices), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(MeshVertex, BoneWeights), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            };
-
-            if (meshVsBlob && meshPsBlob)
+            const auto particleShaderPath = resolveShader("shaders/particles.hlsl");
+            if (std::filesystem::exists(particleShaderPath))
             {
-                PipelineConfig meshCfg{};
-                meshCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-                meshCfg.CullMode = D3D12_CULL_MODE_BACK;
-                meshCfg.FillMode = D3D12_FILL_MODE_SOLID;
-                meshCfg.RtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-                meshCfg.EnableBlend = false;
-                meshCfg.EnableDepth = true;
-                meshCfg.DepthWrite = true;
-                meshCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-                meshCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
-
-                auto initMeshRes = m_meshPipeline.Initialize(device, (*meshVsBlob).Get(), (*meshPsBlob).Get(), meshLayout, meshCfg);
-                if (!initMeshRes)
-                {
-                    RL_LOG_WARN("Failed to initialize 3D Mesh pipeline: {}", initMeshRes.error());
-                }
-                else
-                {
-                    RL_LOG_INFO("[RenderSystem] 3D Mesh pipeline initialized successfully.");
-                }
+                RL_LOG_INFO("[RenderSystem] Particle shader resolved: '{}'", particleShaderPath.string());
             }
 
-            const auto quadShaderPath = resolveShader("shaders/quad.hlsl");
-            auto quadVsBlob = shaderCompiler->CompileVertexShader(quadShaderPath, "VSMain", "6_5");
-            auto quadPsBlob = shaderCompiler->CompilePixelShader(quadShaderPath, "PSMain", "6_5");
-            if (quadVsBlob && quadPsBlob)
+            auto reloadRes = ReloadPipelines();
+            if (!reloadRes)
             {
-                const D3D12_INPUT_ELEMENT_DESC quadLayout[] = {
-                    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(Vertex, Position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                    { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vertex, Color),    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, offsetof(Vertex, UV),       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                };
-
-                PipelineConfig quadCfg{};
-                quadCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-                quadCfg.CullMode = D3D12_CULL_MODE_NONE;
-                quadCfg.FillMode = D3D12_FILL_MODE_SOLID;
-                quadCfg.RtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-                quadCfg.EnableBlend = true;
-                quadCfg.EnableDepth = true;
-                quadCfg.DepthWrite = false;
-                quadCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-                quadCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
-
-                auto initQuadRes = m_ownedQuadPipeline.Initialize(device, (*quadVsBlob).Get(), (*quadPsBlob).Get(), quadLayout, quadCfg);
-                if (initQuadRes)
-                {
-                    m_quadPipeline = &m_ownedQuadPipeline;
-                    RL_LOG_INFO("[RenderSystem] 2D Quad pipeline initialized successfully.");
-                }
+                RL_LOG_WARN("[RenderSystem] Pipeline initialization warning: {}", reloadRes.error());
             }
 
-            const auto shadowShaderPath = resolveShader("shaders/shadow_depth.hlsl");
-            auto shadowVsBlob = shaderCompiler->CompileVertexShader(shadowShaderPath, "VSMain", "6_5");
-            if (shadowVsBlob)
+            std::filesystem::path shadersDir;
+            if (const auto vfsRes = VFS::Resolve("shaders://"))
             {
-                PipelineConfig shadowCfg{};
-                shadowCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-                shadowCfg.CullMode = D3D12_CULL_MODE_NONE;
-                shadowCfg.FillMode = D3D12_FILL_MODE_SOLID;
-                shadowCfg.NumRenderTargets = 0;
-                shadowCfg.RtvFormat = DXGI_FORMAT_UNKNOWN;
-                shadowCfg.EnableDepth = true;
-                shadowCfg.DepthWrite = true;
-                shadowCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-                shadowCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
-                shadowCfg.DepthBias = 50;
-                shadowCfg.SlopeScaledDepthBias = 1.0f;
-
-                auto initShadowRes = m_shadowPipeline.Initialize(device, (*shadowVsBlob).Get(), nullptr, meshLayout, shadowCfg);
-                if (!initShadowRes)
-                {
-                    RL_LOG_WARN("Failed to initialize Shadow pipeline: {}", initShadowRes.error());
-                }
-                else
-                {
-                    RL_LOG_INFO("[RenderSystem] Shadow depth pipeline initialized successfully.");
-                }
+                shadersDir = *vfsRes;
+            }
+            else
+            {
+                shadersDir = resolveShader("shaders/mesh3d.hlsl").parent_path();
             }
 
-            const auto gridShaderPath = resolveShader("shaders/grid3d.hlsl");
-            auto gridVsBlob = shaderCompiler->CompileVertexShader(gridShaderPath, "VSMain", "6_5");
-            auto gridPsBlob = shaderCompiler->CompilePixelShader(gridShaderPath, "PSMain", "6_5");
-
-            if (gridVsBlob && gridPsBlob)
+            if (std::filesystem::exists(shadersDir))
             {
-                PipelineConfig gridCfg{};
-                gridCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-                gridCfg.CullMode = D3D12_CULL_MODE_NONE;
-                gridCfg.FillMode = D3D12_FILL_MODE_SOLID;
-                gridCfg.RtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-                gridCfg.EnableBlend = true;
-                gridCfg.EnableDepth = true;
-                gridCfg.DepthWrite = false;
-                gridCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-                gridCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
+                m_fileWatcher = std::make_unique<FileWatcher>();
+                m_fileWatcher->Watch(shadersDir, [this](const FileChangeEvent& evt) {
+                    if (evt.type == FileChangeType::Modified || evt.type == FileChangeType::Created)
+                    {
+                        if (evt.path.extension() == ".hlsl")
+                        {
+                            RL_LOG_INFO("[RenderSystem] Shader change detected: '{}', queuing reload.", evt.path.filename().string());
+                            m_needsShaderReload.store(true, std::memory_order_release);
+                        }
+                    }
+                }, true);
 
-                auto initGridRes = m_gridPipeline.Initialize(device, (*gridVsBlob).Get(), (*gridPsBlob).Get(), meshLayout, gridCfg);
-                if (!initGridRes)
+                wchar_t exePathBuf[MAX_PATH];
+                GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+                const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
+                const std::filesystem::path sourceShadersDir = (exeDir / ".." / ".." / ".." / "shaders").lexically_normal();
+                if (std::filesystem::exists(sourceShadersDir) && sourceShadersDir != shadersDir)
                 {
-                    RL_LOG_WARN("Failed to initialize 3D Ground Grid pipeline: {}", initGridRes.error());
+                    m_fileWatcher->Watch(sourceShadersDir, [this](const FileChangeEvent& evt) {
+                        if (evt.type == FileChangeType::Modified || evt.type == FileChangeType::Created)
+                        {
+                            if (evt.path.extension() == ".hlsl")
+                            {
+                                RL_LOG_INFO("[RenderSystem] Source shader change detected: '{}', queuing reload.", evt.path.filename().string());
+                                m_needsShaderReload.store(true, std::memory_order_release);
+                            }
+                        }
+                    }, true);
                 }
-                else
-                {
-                    RL_LOG_INFO("[RenderSystem] 3D Ground Grid pipeline initialized successfully.");
-                }
+
+                m_fileWatcher->Start();
+                RL_LOG_INFO("[RenderSystem] Shader hot-reloading FileWatcher active on '{}'.", shadersDir.string());
             }
         }
 
@@ -406,6 +350,12 @@ namespace RL
 
     void RenderSystem::Destroy() noexcept
     {
+        if (m_fileWatcher)
+        {
+            m_fileWatcher->Stop();
+            m_fileWatcher.reset();
+        }
+
         m_activeBatches.clear();
         m_activeBatches.shrink_to_fit();
         m_visibleMeshIndices.clear();
@@ -853,6 +803,15 @@ namespace RL
     {
         m_transientAllocator.Reset();
 
+        if (m_needsShaderReload.exchange(false, std::memory_order_acq_rel))
+        {
+            auto reloadRes = ReloadPipelines();
+            if (!reloadRes)
+            {
+                RL_LOG_ERROR("[RenderSystem] Shader hot-reload failed: {}", reloadRes.error());
+            }
+        }
+
         if (!m_isInitialized || !cmdList || frameIndex >= NUM_FRAMES)
         {
             return;
@@ -1222,5 +1181,183 @@ namespace RL
         }
 
         m_lastRenderedCount = renderedCount;
+    }
+
+    std::expected<void, std::string> RenderSystem::ReloadPipelines()
+    {
+        if (!m_device)
+        {
+            return std::unexpected("Device pointer is null when reloading pipelines.");
+        }
+        if (!m_shaderCompiler)
+        {
+            return std::unexpected("ShaderCompiler pointer is null when reloading pipelines.");
+        }
+
+        auto resolveShader = [](const std::string& rel) -> std::filesystem::path {
+            if (rel.find("://") != std::string::npos)
+            {
+                if (const auto vfsRes = VFS::Resolve(rel)) return *vfsRes;
+            }
+            const std::string filename = std::filesystem::path(rel).filename().string();
+            if (const auto vfsRes = VFS::Resolve("shaders://" + filename)) return *vfsRes;
+            if (const auto vfsRes = VFS::Resolve(rel)) return *vfsRes;
+            if (std::filesystem::exists(rel)) return rel;
+            wchar_t exePathBuf[MAX_PATH];
+            GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+            const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
+            if (std::filesystem::exists(exeDir / rel)) return exeDir / rel;
+            if (std::filesystem::exists(exeDir / "shaders" / filename)) return exeDir / "shaders" / filename;
+            if (std::filesystem::exists(exeDir / ".." / rel)) return exeDir / ".." / rel;
+            if (std::filesystem::exists(exeDir / ".." / ".." / ".." / rel)) return (exeDir / ".." / ".." / ".." / rel).lexically_normal();
+            if (std::filesystem::exists(exeDir / ".." / ".." / ".." / "shaders" / filename)) return (exeDir / ".." / ".." / ".." / "shaders" / filename).lexically_normal();
+            if (std::filesystem::exists("../" + rel)) return "../" + rel;
+            if (std::filesystem::exists("../../" + rel)) return "../../" + rel;
+            return rel;
+        };
+
+        m_shaderCompiler->ClearCache();
+
+        const auto meshShaderPath = resolveShader("shaders/mesh3d.hlsl");
+        auto meshVsBlob = m_shaderCompiler->RecompileVertexShader(meshShaderPath, "VSMain", "6_5");
+        if (!meshVsBlob)
+        {
+            return std::unexpected(std::format("Mesh VS compilation error: {}", meshVsBlob.error()));
+        }
+        auto meshPsBlob = m_shaderCompiler->RecompilePixelShader(meshShaderPath, "PSMain", "6_5");
+        if (!meshPsBlob)
+        {
+            return std::unexpected(std::format("Mesh PS compilation error: {}", meshPsBlob.error()));
+        }
+
+        const D3D12_INPUT_ELEMENT_DESC meshLayout[] = {
+            { "POSITION",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(MeshVertex, Position),    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "NORMAL",       0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(MeshVertex, Normal),      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD",     0, DXGI_FORMAT_R32G32_FLOAT,       0, offsetof(MeshVertex, UV),          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "COLOR",        0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(MeshVertex, Color),       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TANGENT",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(MeshVertex, Tangent),     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_UINT,  0, offsetof(MeshVertex, BoneIndices), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(MeshVertex, BoneWeights), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        };
+
+        PipelineConfig meshCfg{};
+        meshCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        meshCfg.CullMode = D3D12_CULL_MODE_BACK;
+        meshCfg.FillMode = D3D12_FILL_MODE_SOLID;
+        meshCfg.RtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        meshCfg.EnableBlend = false;
+        meshCfg.EnableDepth = true;
+        meshCfg.DepthWrite = true;
+        meshCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        meshCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
+
+        Pipeline newMeshPipeline;
+        auto initMeshRes = newMeshPipeline.Initialize(m_device, (*meshVsBlob).Get(), (*meshPsBlob).Get(), meshLayout, meshCfg);
+        if (!initMeshRes)
+        {
+            return std::unexpected(std::format("Mesh pipeline creation failed: {}", initMeshRes.error()));
+        }
+
+        const auto quadShaderPath = resolveShader("shaders/quad.hlsl");
+        auto quadVsBlob = m_shaderCompiler->RecompileVertexShader(quadShaderPath, "VSMain", "6_5");
+        if (!quadVsBlob)
+        {
+            return std::unexpected(std::format("Quad VS compilation error: {}", quadVsBlob.error()));
+        }
+        auto quadPsBlob = m_shaderCompiler->RecompilePixelShader(quadShaderPath, "PSMain", "6_5");
+        if (!quadPsBlob)
+        {
+            return std::unexpected(std::format("Quad PS compilation error: {}", quadPsBlob.error()));
+        }
+
+        const D3D12_INPUT_ELEMENT_DESC quadLayout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(Vertex, Position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vertex, Color),    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, offsetof(Vertex, UV),       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        };
+
+        PipelineConfig quadCfg{};
+        quadCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        quadCfg.CullMode = D3D12_CULL_MODE_NONE;
+        quadCfg.FillMode = D3D12_FILL_MODE_SOLID;
+        quadCfg.RtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        quadCfg.EnableBlend = true;
+        quadCfg.EnableDepth = true;
+        quadCfg.DepthWrite = false;
+        quadCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        quadCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
+
+        Pipeline newQuadPipeline;
+        auto initQuadRes = newQuadPipeline.Initialize(m_device, (*quadVsBlob).Get(), (*quadPsBlob).Get(), quadLayout, quadCfg);
+        if (!initQuadRes)
+        {
+            return std::unexpected(std::format("Quad pipeline creation failed: {}", initQuadRes.error()));
+        }
+
+        const auto shadowShaderPath = resolveShader("shaders/shadow_depth.hlsl");
+        auto shadowVsBlob = m_shaderCompiler->RecompileVertexShader(shadowShaderPath, "VSMain", "6_5");
+        if (!shadowVsBlob)
+        {
+            return std::unexpected(std::format("Shadow VS compilation error: {}", shadowVsBlob.error()));
+        }
+
+        PipelineConfig shadowCfg{};
+        shadowCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        shadowCfg.CullMode = D3D12_CULL_MODE_NONE;
+        shadowCfg.FillMode = D3D12_FILL_MODE_SOLID;
+        shadowCfg.NumRenderTargets = 0;
+        shadowCfg.RtvFormat = DXGI_FORMAT_UNKNOWN;
+        shadowCfg.EnableDepth = true;
+        shadowCfg.DepthWrite = true;
+        shadowCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        shadowCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
+        shadowCfg.DepthBias = 50;
+        shadowCfg.SlopeScaledDepthBias = 1.0f;
+
+        Pipeline newShadowPipeline;
+        auto initShadowRes = newShadowPipeline.Initialize(m_device, (*shadowVsBlob).Get(), nullptr, meshLayout, shadowCfg);
+        if (!initShadowRes)
+        {
+            return std::unexpected(std::format("Shadow pipeline creation failed: {}", initShadowRes.error()));
+        }
+
+        const auto gridShaderPath = resolveShader("shaders/grid3d.hlsl");
+        auto gridVsBlob = m_shaderCompiler->RecompileVertexShader(gridShaderPath, "VSMain", "6_5");
+        if (!gridVsBlob)
+        {
+            return std::unexpected(std::format("Grid VS compilation error: {}", gridVsBlob.error()));
+        }
+        auto gridPsBlob = m_shaderCompiler->RecompilePixelShader(gridShaderPath, "PSMain", "6_5");
+        if (!gridPsBlob)
+        {
+            return std::unexpected(std::format("Grid PS compilation error: {}", gridPsBlob.error()));
+        }
+
+        PipelineConfig gridCfg{};
+        gridCfg.TopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        gridCfg.CullMode = D3D12_CULL_MODE_NONE;
+        gridCfg.FillMode = D3D12_FILL_MODE_SOLID;
+        gridCfg.RtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        gridCfg.EnableBlend = true;
+        gridCfg.EnableDepth = true;
+        gridCfg.DepthWrite = false;
+        gridCfg.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        gridCfg.DsvFormat = DXGI_FORMAT_D32_FLOAT;
+
+        Pipeline newGridPipeline;
+        auto initGridRes = newGridPipeline.Initialize(m_device, (*gridVsBlob).Get(), (*gridPsBlob).Get(), meshLayout, gridCfg);
+        if (!initGridRes)
+        {
+            return std::unexpected(std::format("Grid pipeline creation failed: {}", initGridRes.error()));
+        }
+
+        m_meshPipeline = std::move(newMeshPipeline);
+        m_ownedQuadPipeline = std::move(newQuadPipeline);
+        m_quadPipeline = &m_ownedQuadPipeline;
+        m_shadowPipeline = std::move(newShadowPipeline);
+        m_gridPipeline = std::move(newGridPipeline);
+
+        RL_LOG_INFO("[RenderSystem] All 4 graphics pipelines reloaded successfully.");
+        return {};
     }
 }

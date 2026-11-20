@@ -160,6 +160,39 @@ namespace RL
         bool IsTrigger = false;
     };
 
+    struct DistanceJointComponent
+    {
+        Entity TargetEntity{};
+        DirectX::XMFLOAT3 AnchorA{ 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 AnchorB{ 0.0f, 0.0f, 0.0f };
+        f32 TargetDistance = 1.0f;
+        f32 Stiffness = 1.0f;
+        f32 Damping = 0.1f;
+        bool AutoDistance = true;
+    };
+
+    struct HingeJointComponent
+    {
+        Entity TargetEntity{};
+        DirectX::XMFLOAT3 Anchor{ 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 Axis{ 0.0f, 1.0f, 0.0f };
+        f32 LowerAngleLimit = -3.14159265f;
+        f32 UpperAngleLimit = 3.14159265f;
+        bool EnableLimits = false;
+        f32 MotorSpeed = 0.0f;
+        f32 MaxMotorTorque = 0.0f;
+        bool EnableMotor = false;
+    };
+
+    struct FixedJointComponent
+    {
+        Entity TargetEntity{};
+        DirectX::XMFLOAT3 RelativeOffset{ 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 RelativeRotation{ 0.0f, 0.0f, 0.0f };
+        f32 BreakForce = 0.0f;
+        bool IsBroken = false;
+    };
+
     struct ParticleEmitterComponent
     {
         u32 MaxParticles = 1024;

@@ -1,4 +1,5 @@
 #include "Graphics/DX12/ShaderCompiler.hpp"
+#include "Platform/FileSystem/VFS.hpp"
 #include "Core/HResult.hpp"
 
 #include <format>
@@ -42,6 +43,79 @@ namespace RL
         return {};
     }
 
+    std::filesystem::path ShaderCompiler::ResolveShaderSourcePath(const std::filesystem::path& path) const
+    {
+        if (std::filesystem::exists(path))
+        {
+            return path;
+        }
+
+        const std::string pathStr = path.string();
+        if (pathStr.find("://") != std::string::npos)
+        {
+            const auto vfsRes = VFS::Resolve(pathStr);
+            if (vfsRes && std::filesystem::exists(*vfsRes))
+            {
+                return *vfsRes;
+            }
+        }
+
+        const std::string filename = path.filename().string();
+        const auto vfsShader = VFS::Resolve("shaders://" + filename);
+        if (vfsShader && std::filesystem::exists(*vfsShader))
+        {
+            return *vfsShader;
+        }
+
+        const auto vfsDirect = VFS::Resolve(pathStr);
+        if (vfsDirect && std::filesystem::exists(*vfsDirect))
+        {
+            return *vfsDirect;
+        }
+
+        wchar_t exePathBuf[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+        const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
+
+        if (std::filesystem::exists(exeDir / path))
+        {
+            return exeDir / path;
+        }
+        if (std::filesystem::exists(exeDir / "shaders" / filename))
+        {
+            return exeDir / "shaders" / filename;
+        }
+        if (std::filesystem::exists(exeDir / ".." / path))
+        {
+            return exeDir / ".." / path;
+        }
+        if (std::filesystem::exists(exeDir / ".." / ".." / ".." / path))
+        {
+            return (exeDir / ".." / ".." / ".." / path).lexically_normal();
+        }
+        if (std::filesystem::exists(exeDir / ".." / ".." / ".." / "shaders" / filename))
+        {
+            return (exeDir / ".." / ".." / ".." / "shaders" / filename).lexically_normal();
+        }
+        if (std::filesystem::exists("../" + pathStr))
+        {
+            return "../" + pathStr;
+        }
+        if (std::filesystem::exists("../../" + pathStr))
+        {
+            return "../../" + pathStr;
+        }
+
+        return path;
+    }
+
+    void ShaderCompiler::ClearCache()
+    {
+        std::lock_guard lock(m_cacheMutex);
+        m_dxcCache.clear();
+        m_d3dCache.clear();
+    }
+
     std::expected<ComPtr<IDxcBlob>, std::string> ShaderCompiler::CompileShader(const ShaderCompileDesc& desc)
     {
         if (!m_initialized)
@@ -53,18 +127,31 @@ namespace RL
             }
         }
 
-        if (!std::filesystem::exists(desc.filePath))
+        const auto resolvedPath = ResolveShaderSourcePath(desc.filePath);
+        if (!std::filesystem::exists(resolvedPath))
         {
             return std::unexpected(std::format("Shader source file does not exist: '{}'", desc.filePath.string()));
         }
 
+        const std::string cacheKey = std::format("{}:{}:{}:{}",
+            resolvedPath.string(), desc.entryPoint, static_cast<u32>(desc.stage), desc.shaderModel);
+
+        {
+            std::lock_guard lock(m_cacheMutex);
+            auto it = m_dxcCache.find(cacheKey);
+            if (it != m_dxcCache.end())
+            {
+                return it->second;
+            }
+        }
+
         ComPtr<IDxcBlobEncoding> sourceBlob;
-        const std::wstring widePath = desc.filePath.wstring();
+        const std::wstring widePath = resolvedPath.wstring();
         const HRESULT loadHr = m_utils->LoadFile(widePath.c_str(), nullptr, &sourceBlob);
         if (FAILED(loadHr))
         {
             return std::unexpected(std::format("Failed to load shader file '{}'. Error: 0x{:08X}",
-                desc.filePath.string(), static_cast<u32>(loadHr)));
+                resolvedPath.string(), static_cast<u32>(loadHr)));
         }
 
         DxcBuffer sourceBuffer{};
@@ -73,7 +160,9 @@ namespace RL
         sourceBuffer.Encoding = DXC_CP_UTF8;
 
         std::vector<std::wstring> arguments;
-        arguments.push_back(desc.filePath.filename().wstring());
+        arguments.push_back(resolvedPath.filename().wstring());
+        arguments.push_back(L"-I");
+        arguments.push_back(resolvedPath.parent_path().wstring());
 
         arguments.push_back(L"-E");
         arguments.push_back(ToWideString(desc.entryPoint));
@@ -162,6 +251,11 @@ namespace RL
             return std::unexpected("DXC compilation succeeded but no binary output was generated.");
         }
 
+        {
+            std::lock_guard lock(m_cacheMutex);
+            m_dxcCache[cacheKey] = shaderBlob;
+        }
+
         std::string stagePrefix = "vs_";
         switch (desc.stage)
         {
@@ -177,6 +271,18 @@ namespace RL
                     shaderBlob->GetBufferSize());
 
         return shaderBlob;
+    }
+
+    std::expected<ComPtr<IDxcBlob>, std::string> ShaderCompiler::RecompileShader(const ShaderCompileDesc& desc)
+    {
+        const auto resolvedPath = ResolveShaderSourcePath(desc.filePath);
+        const std::string cacheKey = std::format("{}:{}:{}:{}",
+            resolvedPath.string(), desc.entryPoint, static_cast<u32>(desc.stage), desc.shaderModel);
+        {
+            std::lock_guard lock(m_cacheMutex);
+            m_dxcCache.erase(cacheKey);
+        }
+        return CompileShader(desc);
     }
 
     std::expected<ComPtr<IDxcBlob>, std::string> ShaderCompiler::CompileVertexShader(
@@ -205,14 +311,52 @@ namespace RL
         });
     }
 
+    std::expected<ComPtr<IDxcBlob>, std::string> ShaderCompiler::RecompileVertexShader(
+        const std::filesystem::path& filePath,
+        std::string_view entryPoint,
+        std::string_view shaderModel)
+    {
+        return RecompileShader({
+            .filePath = filePath,
+            .entryPoint = std::string(entryPoint),
+            .stage = ShaderStage::Vertex,
+            .shaderModel = std::string(shaderModel)
+        });
+    }
+
+    std::expected<ComPtr<IDxcBlob>, std::string> ShaderCompiler::RecompilePixelShader(
+        const std::filesystem::path& filePath,
+        std::string_view entryPoint,
+        std::string_view shaderModel)
+    {
+        return RecompileShader({
+            .filePath = filePath,
+            .entryPoint = std::string(entryPoint),
+            .stage = ShaderStage::Pixel,
+            .shaderModel = std::string(shaderModel)
+        });
+    }
+
     std::expected<ComPtr<ID3DBlob>, std::string> ShaderCompiler::CompileShaderModel50(
         const std::filesystem::path& filePath,
         std::string_view entryPoint,
         ShaderStage stage)
     {
-        if (!std::filesystem::exists(filePath))
+        const auto resolvedPath = ResolveShaderSourcePath(filePath);
+        if (!std::filesystem::exists(resolvedPath))
         {
             return std::unexpected(std::format("Shader source file does not exist: '{}'", filePath.string()));
+        }
+
+        const std::string cacheKey = std::format("{}:{}:{}",
+            resolvedPath.string(), entryPoint, static_cast<u32>(stage));
+        {
+            std::lock_guard lock(m_cacheMutex);
+            auto it = m_d3dCache.find(cacheKey);
+            if (it != m_d3dCache.end())
+            {
+                return it->second;
+            }
         }
 
         std::string targetProfile;
@@ -233,7 +377,7 @@ namespace RL
         ComPtr<ID3DBlob> shaderBlob;
         ComPtr<ID3DBlob> errorBlob;
 
-        const std::wstring widePath = filePath.wstring();
+        const std::wstring widePath = resolvedPath.wstring();
         HRESULT hr = D3DCompileFromFile(
             widePath.c_str(),
             nullptr,
@@ -253,12 +397,17 @@ namespace RL
             {
                 errorMsg = static_cast<const char*>(errorBlob->GetBufferPointer());
             }
-            RL_LOG_ERROR("D3DCompile (SM 5.0) failed for '{}': {}", filePath.string(), errorMsg);
+            RL_LOG_ERROR("D3DCompile (SM 5.0) failed for '{}': {}", resolvedPath.string(), errorMsg);
             return std::unexpected(errorMsg);
         }
 
+        {
+            std::lock_guard lock(m_cacheMutex);
+            m_d3dCache[cacheKey] = shaderBlob;
+        }
+
         RL_LOG_INFO("Shader '{}' compiled successfully via D3DCompile [{}:{}] (Size: {} bytes)",
-                    filePath.filename().string(),
+                    resolvedPath.filename().string(),
                     entryPoint,
                     targetProfile,
                     shaderBlob->GetBufferSize());

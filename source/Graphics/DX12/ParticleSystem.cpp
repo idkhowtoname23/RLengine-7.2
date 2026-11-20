@@ -1,4 +1,5 @@
 #include "Graphics/DX12/ParticleSystem.hpp"
+#include "Platform/FileSystem/VFS.hpp"
 #include "Graphics/DX12/ShaderCompiler.hpp"
 #include "Graphics/DX12/DescriptorManager.hpp"
 #include "Scene/Scene.hpp"
@@ -91,8 +92,32 @@ namespace RL
             if (!cbRes) return std::unexpected("Failed to allocate Particle ConstantBuffer: " + cbRes.error());
         }
 
+        std::filesystem::path particleShaderPath = "shaders/particles.hlsl";
+        if (const auto vfsRes = VFS::Resolve("shaders://particles.hlsl"))
+        {
+            particleShaderPath = *vfsRes;
+        }
+        else if (const auto vfsRes2 = VFS::Resolve("shaders/particles.hlsl"))
+        {
+            particleShaderPath = *vfsRes2;
+        }
+        else
+        {
+            wchar_t exePathBuf[MAX_PATH];
+            GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+            const std::filesystem::path exeDir = std::filesystem::path(exePathBuf).parent_path();
+            if (std::filesystem::exists(exeDir / "shaders" / "particles.hlsl"))
+            {
+                particleShaderPath = exeDir / "shaders" / "particles.hlsl";
+            }
+            else if (std::filesystem::exists(exeDir / ".." / ".." / ".." / "shaders" / "particles.hlsl"))
+            {
+                particleShaderPath = (exeDir / ".." / ".." / ".." / "shaders" / "particles.hlsl").lexically_normal();
+            }
+        }
+
         ShaderCompileDesc vsDesc{};
-        vsDesc.filePath = L"shaders/particles.hlsl";
+        vsDesc.filePath = particleShaderPath;
         vsDesc.entryPoint = "VSMain";
         vsDesc.stage = ShaderStage::Vertex;
         vsDesc.shaderModel = "6_5";
@@ -101,7 +126,7 @@ namespace RL
         if (!vsBlob) return std::unexpected("Failed to compile particle VS: " + vsBlob.error());
 
         ShaderCompileDesc psDesc{};
-        psDesc.filePath = L"shaders/particles.hlsl";
+        psDesc.filePath = particleShaderPath;
         psDesc.entryPoint = "PSMain";
         psDesc.stage = ShaderStage::Pixel;
         psDesc.shaderModel = "6_5";

@@ -5,6 +5,7 @@
 #include "Graphics/DX12/TextureManager.hpp"
 #include "Graphics/DX12/DX12Texture.hpp"
 #include "Audio/AudioEngine.hpp"
+#include "Audio/AudioSystem.hpp"
 #include "Core/Logger.hpp"
 #include "Core/Events/EventBus.hpp"
 #include "Core/Events/CommonEvents.hpp"
@@ -69,6 +70,18 @@ namespace RL
 
             lua_pushcfunction(L, &LuaEntityBridge::Entity_IsVisible);
             lua_setfield(L, -2, "IsVisible");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_PlaySound);
+            lua_setfield(L, -2, "PlaySound");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_StopSound);
+            lua_setfield(L, -2, "StopSound");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_IsSoundPlaying);
+            lua_setfield(L, -2, "IsSoundPlaying");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_SetAudioVolume);
+            lua_setfield(L, -2, "SetAudioVolume");
 
             lua_pushcfunction(L, &LuaEntityBridge::Entity_IsValid);
             lua_setfield(L, -2, "IsValid");
@@ -569,6 +582,124 @@ namespace RL
         return 1;
     }
 
+    int LuaEntityBridge::Entity_PlaySound(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const char* path = luaL_optstring(L, 2, "");
+        const f32 volume = static_cast<f32>(luaL_optnumber(L, 3, 1.0));
+        const bool loop = lua_isboolean(L, 4) ? (lua_toboolean(L, 4) != 0) : false;
+
+        const Entity ent(ud->entityID);
+        auto* src = s_scene->TryGetComponent<AudioSourceComponent>(ent);
+        if (!src)
+        {
+            auto& comp = s_scene->AddComponent<AudioSourceComponent>(ent);
+            src = &comp;
+        }
+
+        if (src)
+        {
+            if (path && strlen(path) > 0)
+            {
+                src->SoundPath = path;
+            }
+            src->Volume = volume;
+            src->Loop = loop;
+            src->IsPlaying = true;
+
+            if (auto* audioSystem = s_scene->GetAudioSystem())
+            {
+                audioSystem->StopEntitySound(ent);
+            }
+        }
+
+        return 0;
+    }
+
+    int LuaEntityBridge::Entity_StopSound(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const Entity ent(ud->entityID);
+        if (auto* src = s_scene->TryGetComponent<AudioSourceComponent>(ent))
+        {
+            src->IsPlaying = false;
+        }
+
+        if (auto* audioSystem = s_scene->GetAudioSystem())
+        {
+            audioSystem->StopEntitySound(ent);
+        }
+
+        return 0;
+    }
+
+    int LuaEntityBridge::Entity_IsSoundPlaying(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+
+        const Entity ent(ud->entityID);
+        const auto* src = s_scene->TryGetComponent<AudioSourceComponent>(ent);
+        if (!src)
+        {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+
+        bool playing = src->IsPlaying;
+        if (playing)
+        {
+            if (const auto* audioSystem = s_scene->GetAudioSystem())
+            {
+                if (audioSystem->HasTrackedSound(ent) && !audioSystem->IsEntitySoundPlaying(ent))
+                {
+                    playing = false;
+                }
+            }
+        }
+
+        lua_pushboolean(L, playing ? 1 : 0);
+        return 1;
+    }
+
+    int LuaEntityBridge::Entity_SetAudioVolume(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const f32 volume = static_cast<f32>(luaL_checknumber(L, 2));
+
+        const Entity ent(ud->entityID);
+        if (auto* src = s_scene->TryGetComponent<AudioSourceComponent>(ent))
+        {
+            src->Volume = volume;
+        }
+
+        if (auto* audioSystem = s_scene->GetAudioSystem())
+        {
+            audioSystem->SetEntitySoundVolume(ent, volume);
+        }
+
+        return 0;
+    }
+
     int LuaEntityBridge::Entity_IsValid(lua_State* L)
     {
         auto* ud = CheckEntity(L, 1);
@@ -764,7 +895,7 @@ namespace RL
         const f32 vol = static_cast<f32>(luaL_optnumber(L, 5, 1.0));
         const f32 minDist = static_cast<f32>(luaL_optnumber(L, 6, 1.0));
         const f32 maxDist = static_cast<f32>(luaL_optnumber(L, 7, 50.0));
-        AudioEngine::Get().PlaySound3D(path, x, y, z, vol, minDist, maxDist);
+        AudioEngine::Get().PlaySpatialSound(path, x, y, z, vol, 1.0f, minDist, maxDist, false);
         return 0;
     }
 
