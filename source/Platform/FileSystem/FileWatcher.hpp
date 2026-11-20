@@ -200,6 +200,8 @@ namespace RL
                                     default: break;
                                 }
 
+                                RL_LOG_INFO("FileWatcher: change in '{}': '{}' action {}", entry.directory.string(), evt.path.filename().string(), static_cast<u32>(fni->Action));
+
                                 if (entry.callback)
                                 {
                                     entry.callback(evt);
