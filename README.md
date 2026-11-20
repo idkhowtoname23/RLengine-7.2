@@ -14,7 +14,9 @@ All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (S
 
 ---
 
-## 🔍 What's New in 7.2 Alpha 2 vs Alpha 1 — Key Additions
+## 🔍 Differences: 7.2 Alpha 2 vs Alpha 1 vs 7.1
+
+### 1. Key Evolution: 7.2 Alpha 2 vs 7.2 Alpha 1
 
 | Architectural Subsystem | RLengine 7.2 Alpha 1 | RLengine 7.2 Alpha 2 (New) | Impact & Improvements |
 | :--- | :--- | :--- | :--- |
@@ -22,6 +24,20 @@ All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (S
 | **Shader Workflow** | Offline compile at startup only | **Live Shader Hot-Reloading** (`FileWatcher` + `ReloadPipelines`) | Background directory monitoring with Windows overlapped I/O; instant pipeline swap upon editing `.hlsl` files or pressing F5. |
 | **Spatial Audio & Lua** | Basic playback | **3D Spatial Audio ECS & OOP Lua Bridge** | `AudioListenerComponent`, `AudioSourceComponent`, `entity:PlaySound()`, `entity:StopSound()`, `RL.Audio.Play3D()`. |
 | **glTF Material Import** | Basic single-texture loader | **Multi-Layer PBR glTF Autoloading** | Full extraction of normal maps, metallic-roughness maps, emissive textures and factors into `MaterialComponent`. |
+
+### 2. Comprehensive Comparison: 7.2 Alpha 2 vs 7.1
+
+| Component | RLengine 7.1 | RLengine 7.2 Alpha 2 | Evolution & Benefits |
+| :--- | :--- | :--- | :--- |
+| **Collision Resolution** | Discrete 60Hz AABB solver | **Swept-Sphere CCD + 15-Axis SAT OBB** | Eliminates projectile tunneling; accurate 3D angular momentum integration for arbitrary oriented boxes. |
+| **Joint Constraints** | None | **DistanceJoint, HingeJoint, FixedJoint** | Mechanical linkages, angular limits, motors, and breakable bonds with lifecycle events. |
+| **Sensor / Trigger Volumes** | None (impulse separation only) | **Trigger Colliders (`IsTrigger`)** | Overlap sensor zones with `Enter`, `Stay`, `Exit` lifecycle events without physical interference. |
+| **Material Pipeline** | Basic Albedo, Roughness, Metallic | **Full Tangent PBR + Multi-Layer glTF** | Tangent-space Normal Mapping (TBN), metallic-roughness maps, and emissive textures across DX12 and DX11. |
+| **Shader Pipeline** | Compile once at startup; restart required | **Live Overlapped Hot-Reloading** | Edit `.hlsl` live during gameplay with atomic GPSO swapping, syntax error resilience, and F5 manual reload. |
+| **Audio Subsystem** | Basic flat playback | **3D Spatial Positional Audio + Lua OOP** | Distance-attenuated 3D emitters, listener orientation tracking, and object-oriented Lua entity audio methods. |
+| **Event Bus Architecture** | Tight direct calls | **Type-Erased EventBus + `DepthGuard`** | Decoupled publish-subscribe messaging; Lua scripting bridge with recursive cascade protection. |
+| **Editor Ergonomics** | Monolithic overlapping windows | **Blender 4.x DCC Station + Floating REPL** | Isolated viewports, non-colliding panels, deep undo/redo snapshots, and floating non-dockable REPL terminal. |
+| **Hardware Telemetry** | Basic logs | **Real-Time `MemoryStats` (PSAPI)** | Live tracking of Working Set RAM, Private Committed Bytes, and subsystem allocations. |
 
 ---
 
@@ -105,7 +121,7 @@ cmake --build build --config Release --parallel
 
 ## 📦 Pre-Release Archive Contents
 
-The pre-release binary archive (`RLengine-7.2-Alpha-1-Windows-x64.zip`) contains:
+The pre-release binary archive (`RLengine-7.2-Alpha-2-Windows-x64.zip`) contains:
 * `RLengine7.2.exe`: Optimized Release executable.
 * `dxcompiler.dll`, `dxil.dll`: Official Microsoft DirectX Shader Compiler runtime.
 * `shaders/`: DX12 and DX11 HLSL shaders (`mesh3d.hlsl`, `quad.hlsl`, `grid3d.hlsl`, `shadow_depth.hlsl`).

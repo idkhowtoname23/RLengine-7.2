@@ -1,61 +1,94 @@
-# 🚀 RLengine 7.2 Alpha 1 — Pre-Release Notes
+# 🚀 RLengine 7.2 Alpha 2 — Pre-Release Notes
 
-RLengine 7.2 Alpha 1 represents the first milestone of the 7.2 release cycle, focusing on high-velocity physics precision, micro-surface material detail, event-driven decoupling, and an isolated Blender 4.x DCC editor layout.
-
----
-
-## 🌟 Highlights & Major Changes
-
-### 1. Continuous Collision Detection (CCD)
-* Ray-cast swept sphere continuous collision detection against static and dynamic geometries.
-* Clamps Time-of-Impact (TOI) to prevent fast projectiles (tested up to 900+ units/sec) from tunneling through thin walls.
-* Controlled via `m_ccdEnabled` and `PhysicsSystem::SetCCDEnabled(bool)`.
-
-### 2. Trigger Zones (`IsTrigger`)
-* Non-physical trigger volumes on both `BoxColliderComponent` and `SphereColliderComponent`.
-* Overlap detection dispatches `PhysicsTriggerEvent` without applying velocity damping or physical separation impulses.
-
-### 3. 15-Axis SAT OBB Rigid Body Physics
-* Full 3D Separating Axis Theorem (SAT) collision solver across 15 candidate axes.
-* Manifold contact generation for oriented boxes with angular momentum integration ($\Delta \omega = I^{-1}(r \times J)$).
-
-### 4. Tangent-Space PBR Normal Mapping (TBN)
-* Extension of vertex stream with 16-byte aligned `Tangent` vectors ($TBN = [T, B, N]$ frame).
-* Normal map perturbation in HLSL Cook-Torrance GGX shaders with ACES tonemapping.
-* DX11 fallback pipeline with flat normal compatibility.
-
-### 5. Decoupled EventBus with `DepthGuard`
-* Global publish-subscribe broker for lifecycle and physics events.
-* Lua 5.4 scripting bridge via `RL.Events.Subscribe`.
-* Stack protection recursion guard (`DepthGuard`) limiting depth to 8 to prevent infinite event cascades.
-
-### 6. Blender 4.x DCC Station & Floating REPL Console
-* Fixed overlapping dock splits: 3D Viewport, Left Tool Shelf, Right Outliner, Right Properties, and Bottom Timeline occupy dedicated non-colliding areas.
-* Safe padding between diagnostic overlay and tool shelf.
-* In-game Lua REPL Console (`~` or `F1`) converted to non-dockable floating overlay (`ImGuiWindowFlags_NoDocking`) preventing accidental docking splits.
-* `Window ➔ Reset Layout to Default` added to main menu bar.
+RLengine 7.2 Alpha 2 marks the second major milestone in the 7.2 development series. Building directly upon the foundation of physical accuracy, material fidelity, and editor isolation established in Alpha 1, Alpha 2 introduces mechanical constraints and joint simulation, background non-blocking live shader hot-reloading, spatial 3D audio with an object-oriented Lua bridge, and full multi-layer glTF PBR material autoloading.
 
 ---
 
-## 📊 Summary of Differences from 7.1
+## 🌟 Highlights & Major New Capabilities in Alpha 2
 
-| Component | RLengine 7.1 | RLengine 7.2 Alpha 1 |
+### 1. ⚙️ Physics Constraints & Joints Solver
+* **DistanceJointComponent**:
+  * Constrains distance between two entities or between an entity and a fixed world anchor.
+  * Configurable stiffness and damping parameters with Baumgarte stabilization.
+  * `AutoDistance` auto-calibration: automatically locks current distance on initialization.
+  * Balanced mass-ratio correction: distributes displacement proportionally between dynamic bodies or applies 100% full correction against static/kinematic anchors.
+* **HingeJointComponent**:
+  * Enforces rotational movement constrained to a single 3D axis with anchor coincidence.
+  * Eliminates angular velocity components perpendicular to the hinge axis.
+  * Rotational limits: `LowerAngleLimit` and `UpperAngleLimit` bounds preventing over-rotation.
+  * Powered motor support: `MotorSpeed` and `MaxMotorTorque` for motorized levers, wheels, and machinery.
+* **FixedJointComponent**:
+  * Rigidly locks relative position and orientation between two bodies.
+  * Configurable `BreakForce`: calculates the cumulative impulse required to maintain the lock over $\Delta t$; if force exceeds `BreakForce`, the bond breaks (`IsBroken = true`) and fires a `PhysicsTriggerEvent` via the `EventBus`.
+
+### 2. 🔥 Live Background Shader Hot-Reloading
+* **Overlapped FileWatcher**:
+  * Background directory watcher monitoring `shaders/` for `.hlsl` modifications.
+  * Implemented using non-blocking Windows Overlapped I/O (`ReadDirectoryChangesW` + `CancelIoEx`), preventing thread deadlocks and allowing instantaneous engine shutdown.
+* **Atomic Pipeline Swapping**:
+  * `ReloadPipelines()` recompiles shaders and rebuilds Graphics Pipeline State Objects (Mesh 3D, Quad, Shadow Depth, Ground Grid) on the fly.
+  * Triggered automatically upon saving shader files or manually via the `F5` hotkey.
+* **Graceful Syntax Error Resilience**:
+  * In the event of a HLSL compilation syntax error, the compiler logs the detailed DXC diagnostic output and preserves existing active pipelines. Rendering continues uninterrupted without crashes.
+
+### 3. 🔊 3D Spatial Audio Subsystem & Lua OOP Bridge
+* **Listener & Emitter Integration**:
+  * `AudioListenerComponent` queries camera / entity 3D orientation and world position.
+  * `AudioSourceComponent` syncs world emitter coordinates with miniaudio 3D distance attenuation.
+* **Object-Oriented Lua 5.4 Scripting API**:
+  * Entity instances expose intuitive audio controls:
+    * `entity:PlaySound(soundPath, [volume], [pitch], [loop])`
+    * `entity:StopSound()`
+    * `entity:IsSoundPlaying()`
+    * `entity:SetAudioVolume(volume)`
+  * Global positional audio trigger: `RL.Audio.Play3D(soundPath, x, y, z, [volume])`.
+
+### 4. 🎨 Multi-Layer glTF PBR Material Autoloading
+* **Automated Texture Extraction**:
+  * `GLTFLoader` now extracts normal maps (`normal_texture`), metallic-roughness maps (`metallic_roughness_texture`), and emissive maps (`emissive_texture`).
+  * Scalar factors (`metallic_factor`, `roughness_factor`, `emissive_factor`) are bound directly into the scene's `MaterialComponent` upon model import.
+
+---
+
+## 🔍 Differences: 7.2 Alpha 2 vs 7.2 Alpha 1
+
+| Feature / Subsystem | RLengine 7.2 Alpha 1 | RLengine 7.2 Alpha 2 (New) |
 |---|---|---|
-| Collision Detection | Discrete 60Hz AABB | **Swept-Sphere CCD + 15-Axis SAT OBB** |
-| Sensor Zones | None (Impulse only) | **Trigger Colliders (`IsTrigger`)** |
-| Materials | PBR Albedo / Rough / Metal | **PBR Normal Mapping (TBN)** |
-| Event Architecture | Direct function calls | **Decoupled EventBus + `DepthGuard`** |
-| Editor Layout | Monolithic fixed windows | **Blender 4.x DCC Station + Floating REPL** |
-| Command History | Basic stack undo | **Deep Entity Cloning & Undo/Redo** |
-| Memory Profiling | Basic logs | **Real-Time `MemoryStats` (PSAPI)** |
+| **Mechanical Joints** | None (rigid dynamic collisions and triggers only) | **DistanceJoint**, **HingeJoint** (with limits & motor), **FixedJoint** (with `BreakForce`) |
+| **Shader Compilation** | One-time compilation at startup; restart required | **Live Background Hot-Reloading** (`FileWatcher` + atomic PSO swap + `F5` keybind) |
+| **Shader Error Handling** | Fatal exit or startup failure on corrupt bytecode | **Fault-Tolerant Fallback**: retains working pipelines if recompile fails |
+| **Audio Scripting** | Flat global audio playback | **Full 3D Spatial Audio ECS** + `entity:PlaySound()`, `entity:StopSound()`, `RL.Audio.Play3D()` |
+| **glTF Material Import** | Single diffuse / albedo texture binding | **Multi-Layer PBR Autoloading**: Normal, Metallic-Roughness, Emissive maps and factors |
 
 ---
 
-## 🛠️ Verification Commands
+## 📊 Comprehensive Comparison: 7.2 Alpha 2 vs 7.1
+
+| Component | RLengine 7.1 | RLengine 7.2 Alpha 2 |
+|---|---|---|
+| **Collision Resolution** | Discrete 60Hz AABB solver | **Swept-Sphere CCD + 15-Axis SAT OBB** |
+| **Joint Constraints** | None | **DistanceJoint, HingeJoint, FixedJoint** |
+| **Sensor / Trigger Volumes** | None (impulse separation only) | **Trigger Colliders (`IsTrigger`) with lifecycle events** |
+| **Material Pipeline** | Basic Albedo, Roughness, Metallic | **Full Tangent PBR (TBN) + Multi-Layer glTF (Normal, Metallic-Roughness, Emissive)** |
+| **Shader Pipeline** | Startup compilation only | **Live Overlapped Hot-Reloading with F5 keybind & atomic PSO swap** |
+| **Audio Subsystem** | Basic flat playback | **3D Spatial Positional Audio + Lua OOP entity methods** |
+| **Event Architecture** | Direct tightly-coupled function calls | **Type-Erased EventBus with `DepthGuard` recursion guard** |
+| **Editor Ergonomics** | Monolithic overlapping windows | **Blender 4.x DCC Station + Floating Non-Dockable REPL Console** |
+| **Undo / Redo** | Basic transform stack | **Deep Entity Cloning & Component Snapshot Undo/Redo** |
+| **Hardware Telemetry** | Log-based output | **Real-Time `MemoryStats` (Working Set & Private RAM via Win32 PSAPI)** |
+
+---
+
+## 🛠️ Verification & Smoke Testing
+
+All builds are validated using automated headless smoke tests:
+
 ```powershell
-# Automated DirectX 12 smoke test
+# Automated DirectX 12 Smoke Test (15 frames + physics + joints + serialization)
 .\RLengine7.2.exe --smoke-test
 
-# Automated DirectX 11 Fallback smoke test
+# Automated DirectX 11 Fallback Smoke Test (Legacy / Winlator compatibility)
 .\RLengine7.2.exe --smoke-test --dx11
 ```
+
+Both test suites exit with code `0`.
