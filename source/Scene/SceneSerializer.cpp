@@ -14,13 +14,14 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <unordered_map>
 
 namespace RL
 {
     using namespace DirectX;
 
     static constexpr u32 BINARY_MAGIC = 0x534C5221;
-    static constexpr u32 BINARY_VERSION = 1;
+    static constexpr u32 BINARY_VERSION = 2;
 
     enum ComponentMask : u32
     {
@@ -39,7 +40,10 @@ namespace RL
         Mask_AudioListener   = 1u << 12,
         Mask_Script          = 1u << 13,
         Mask_QuadRender      = 1u << 14,
-        Mask_Relationship    = 1u << 15
+        Mask_Relationship    = 1u << 15,
+        Mask_DistanceJoint   = 1u << 16,
+        Mask_HingeJoint      = 1u << 17,
+        Mask_FixedJoint      = 1u << 18
     };
 
     enum class JsonType { Null, Bool, Number, String, Array, Object };
@@ -388,6 +392,15 @@ namespace RL
         return in.good();
     }
 
+    static UUID GetEntityUUIDOrNil(const Scene& scene, Entity ent)
+    {
+        if (ent.IsValid() && scene.IsAlive(ent) && scene.HasComponent<IDComponent>(ent))
+        {
+            return scene.GetComponent<IDComponent>(ent).ID;
+        }
+        return UUID::Nil();
+    }
+
     bool SceneSerializer::SerializeJson(const Scene& scene, const std::filesystem::path& filepath)
     {
         std::error_code ec;
@@ -399,8 +412,17 @@ namespace RL
         std::ofstream out(filepath);
         if (!out.is_open()) return false;
 
+        const auto& env = scene.GetEnvironment();
+
         out << "{\n";
-        out << "  \"version\": \"7.1\",\n";
+        out << "  \"version\": \"7.2\",\n";
+        out << "  \"environment\": {\n";
+        out << "    \"sky_color\": [" << env.SkyColor.x << ", " << env.SkyColor.y << ", " << env.SkyColor.z << ", " << env.SkyColor.w << "],\n";
+        out << "    \"ambient_strength\": " << env.AmbientStrength << ",\n";
+        out << "    \"fog_enabled\": " << (env.FogEnabled ? "true" : "false") << ",\n";
+        out << "    \"fog_density\": " << env.FogDensity << ",\n";
+        out << "    \"fog_color\": [" << env.FogColor.x << ", " << env.FogColor.y << ", " << env.FogColor.z << "]\n";
+        out << "  },\n";
         out << "  \"entities\": [\n";
 
         const auto& alive = scene.GetAliveEntities();
@@ -633,6 +655,51 @@ namespace RL
                 out << "      }";
             }
 
+            if (scene.HasComponent<DistanceJointComponent>(ent))
+            {
+                const auto& dj = scene.GetComponent<DistanceJointComponent>(ent);
+                const UUID targetId = GetEntityUUIDOrNil(scene, dj.TargetEntity);
+                out << ",\n      \"distance_joint\": {\n";
+                out << "        \"target_uuid\": "; WriteEscapeString(out, targetId.ToString()); out << ",\n";
+                out << "        \"anchor_a\": [" << dj.AnchorA.x << ", " << dj.AnchorA.y << ", " << dj.AnchorA.z << "],\n";
+                out << "        \"anchor_b\": [" << dj.AnchorB.x << ", " << dj.AnchorB.y << ", " << dj.AnchorB.z << "],\n";
+                out << "        \"target_distance\": " << dj.TargetDistance << ",\n";
+                out << "        \"stiffness\": " << dj.Stiffness << ",\n";
+                out << "        \"damping\": " << dj.Damping << ",\n";
+                out << "        \"auto_distance\": " << (dj.AutoDistance ? "true" : "false") << "\n";
+                out << "      }";
+            }
+
+            if (scene.HasComponent<HingeJointComponent>(ent))
+            {
+                const auto& hj = scene.GetComponent<HingeJointComponent>(ent);
+                const UUID targetId = GetEntityUUIDOrNil(scene, hj.TargetEntity);
+                out << ",\n      \"hinge_joint\": {\n";
+                out << "        \"target_uuid\": "; WriteEscapeString(out, targetId.ToString()); out << ",\n";
+                out << "        \"anchor\": [" << hj.Anchor.x << ", " << hj.Anchor.y << ", " << hj.Anchor.z << "],\n";
+                out << "        \"axis\": [" << hj.Axis.x << ", " << hj.Axis.y << ", " << hj.Axis.z << "],\n";
+                out << "        \"lower_angle_limit\": " << hj.LowerAngleLimit << ",\n";
+                out << "        \"upper_angle_limit\": " << hj.UpperAngleLimit << ",\n";
+                out << "        \"enable_limits\": " << (hj.EnableLimits ? "true" : "false") << ",\n";
+                out << "        \"motor_speed\": " << hj.MotorSpeed << ",\n";
+                out << "        \"max_motor_torque\": " << hj.MaxMotorTorque << ",\n";
+                out << "        \"enable_motor\": " << (hj.EnableMotor ? "true" : "false") << "\n";
+                out << "      }";
+            }
+
+            if (scene.HasComponent<FixedJointComponent>(ent))
+            {
+                const auto& fj = scene.GetComponent<FixedJointComponent>(ent);
+                const UUID targetId = GetEntityUUIDOrNil(scene, fj.TargetEntity);
+                out << ",\n      \"fixed_joint\": {\n";
+                out << "        \"target_uuid\": "; WriteEscapeString(out, targetId.ToString()); out << ",\n";
+                out << "        \"relative_offset\": [" << fj.RelativeOffset.x << ", " << fj.RelativeOffset.y << ", " << fj.RelativeOffset.z << "],\n";
+                out << "        \"relative_rotation\": [" << fj.RelativeRotation.x << ", " << fj.RelativeRotation.y << ", " << fj.RelativeRotation.z << "],\n";
+                out << "        \"break_force\": " << fj.BreakForce << ",\n";
+                out << "        \"is_broken\": " << (fj.IsBroken ? "true" : "false") << "\n";
+                out << "      }";
+            }
+
             out << "\n    }";
         }
 
@@ -659,8 +726,22 @@ namespace RL
         if (!entitiesNode || !entitiesNode->IsArray()) return false;
 
         scene.Clear();
+        scene.GetEnvironment() = WorldEnvironment{};
+
+        if (const auto* envObj = root.Find("environment"); envObj && envObj->IsObject())
+        {
+            auto& env = scene.GetEnvironment();
+            env.SkyColor = ReadVec4(envObj->Find("sky_color"), env.SkyColor);
+            if (const auto* amb = envObj->Find("ambient_strength"); amb && amb->IsNumber()) env.AmbientStrength = amb->AsFloat();
+            if (const auto* fe = envObj->Find("fog_enabled"); fe && fe->IsBool()) env.FogEnabled = fe->BoolVal;
+            if (const auto* fd = envObj->Find("fog_density"); fd && fd->IsNumber()) env.FogDensity = fd->AsFloat();
+            env.FogColor = ReadVec3(envObj->Find("fog_color"), env.FogColor);
+        }
 
         std::vector<std::pair<Entity, UUID>> pendingParents;
+        std::vector<std::pair<Entity, UUID>> pendingDistanceJoints;
+        std::vector<std::pair<Entity, UUID>> pendingHingeJoints;
+        std::vector<std::pair<Entity, UUID>> pendingFixedJoints;
         std::unordered_map<UUID, Entity> uuidToEntity;
 
         for (const auto& entNode : entitiesNode->ArrVal)
@@ -868,6 +949,63 @@ namespace RL
                 if (const auto* ti = qObj->Find("texture_index"); ti && ti->IsNumber()) q.TextureIndex = static_cast<u32>(ti->NumVal);
                 if (const auto* tp = qObj->Find("texture_path"); tp && tp->IsString()) q.TexturePath = tp->StrVal;
             }
+
+            if (const auto* djObj = entNode.Find("distance_joint"); djObj && djObj->IsObject())
+            {
+                auto& dj = scene.AddComponent<DistanceJointComponent>(entity);
+                dj.AnchorA = ReadVec3(djObj->Find("anchor_a"), dj.AnchorA);
+                dj.AnchorB = ReadVec3(djObj->Find("anchor_b"), dj.AnchorB);
+                if (const auto* td = djObj->Find("target_distance"); td && td->IsNumber()) dj.TargetDistance = td->AsFloat();
+                if (const auto* st = djObj->Find("stiffness"); st && st->IsNumber()) dj.Stiffness = st->AsFloat();
+                if (const auto* dm = djObj->Find("damping"); dm && dm->IsNumber()) dj.Damping = dm->AsFloat();
+                if (const auto* ad = djObj->Find("auto_distance"); ad && ad->IsBool()) dj.AutoDistance = ad->BoolVal;
+                if (const auto* tu = djObj->Find("target_uuid"); tu && tu->IsString())
+                {
+                    const UUID targetId = UUID::FromString(tu->StrVal);
+                    if (!targetId.IsNil())
+                    {
+                        pendingDistanceJoints.emplace_back(entity, targetId);
+                    }
+                }
+            }
+
+            if (const auto* hjObj = entNode.Find("hinge_joint"); hjObj && hjObj->IsObject())
+            {
+                auto& hj = scene.AddComponent<HingeJointComponent>(entity);
+                hj.Anchor = ReadVec3(hjObj->Find("anchor"), hj.Anchor);
+                hj.Axis = ReadVec3(hjObj->Find("axis"), hj.Axis);
+                if (const auto* lo = hjObj->Find("lower_angle_limit"); lo && lo->IsNumber()) hj.LowerAngleLimit = lo->AsFloat();
+                if (const auto* hi = hjObj->Find("upper_angle_limit"); hi && hi->IsNumber()) hj.UpperAngleLimit = hi->AsFloat();
+                if (const auto* el = hjObj->Find("enable_limits"); el && el->IsBool()) hj.EnableLimits = el->BoolVal;
+                if (const auto* ms = hjObj->Find("motor_speed"); ms && ms->IsNumber()) hj.MotorSpeed = ms->AsFloat();
+                if (const auto* mt = hjObj->Find("max_motor_torque"); mt && mt->IsNumber()) hj.MaxMotorTorque = mt->AsFloat();
+                if (const auto* em = hjObj->Find("enable_motor"); em && em->IsBool()) hj.EnableMotor = em->BoolVal;
+                if (const auto* tu = hjObj->Find("target_uuid"); tu && tu->IsString())
+                {
+                    const UUID targetId = UUID::FromString(tu->StrVal);
+                    if (!targetId.IsNil())
+                    {
+                        pendingHingeJoints.emplace_back(entity, targetId);
+                    }
+                }
+            }
+
+            if (const auto* fjObj = entNode.Find("fixed_joint"); fjObj && fjObj->IsObject())
+            {
+                auto& fj = scene.AddComponent<FixedJointComponent>(entity);
+                fj.RelativeOffset = ReadVec3(fjObj->Find("relative_offset"), fj.RelativeOffset);
+                fj.RelativeRotation = ReadVec3(fjObj->Find("relative_rotation"), fj.RelativeRotation);
+                if (const auto* bf = fjObj->Find("break_force"); bf && bf->IsNumber()) fj.BreakForce = bf->AsFloat();
+                if (const auto* ib = fjObj->Find("is_broken"); ib && ib->IsBool()) fj.IsBroken = ib->BoolVal;
+                if (const auto* tu = fjObj->Find("target_uuid"); tu && tu->IsString())
+                {
+                    const UUID targetId = UUID::FromString(tu->StrVal);
+                    if (!targetId.IsNil())
+                    {
+                        pendingFixedJoints.emplace_back(entity, targetId);
+                    }
+                }
+            }
         }
 
         for (const auto& [child, parentUUID] : pendingParents)
@@ -875,6 +1013,30 @@ namespace RL
             if (auto it = uuidToEntity.find(parentUUID); it != uuidToEntity.end())
             {
                 scene.SetParent(child, it->second);
+            }
+        }
+
+        for (const auto& [ent, targetUUID] : pendingDistanceJoints)
+        {
+            if (auto it = uuidToEntity.find(targetUUID); it != uuidToEntity.end())
+            {
+                scene.GetComponent<DistanceJointComponent>(ent).TargetEntity = it->second;
+            }
+        }
+
+        for (const auto& [ent, targetUUID] : pendingHingeJoints)
+        {
+            if (auto it = uuidToEntity.find(targetUUID); it != uuidToEntity.end())
+            {
+                scene.GetComponent<HingeJointComponent>(ent).TargetEntity = it->second;
+            }
+        }
+
+        for (const auto& [ent, targetUUID] : pendingFixedJoints)
+        {
+            if (auto it = uuidToEntity.find(targetUUID); it != uuidToEntity.end())
+            {
+                scene.GetComponent<FixedJointComponent>(ent).TargetEntity = it->second;
             }
         }
 
@@ -894,6 +1056,14 @@ namespace RL
 
         WriteBinary(out, BINARY_MAGIC);
         WriteBinary(out, BINARY_VERSION);
+
+        const auto& env = scene.GetEnvironment();
+        WriteBinary(out, env.SkyColor);
+        WriteBinary(out, env.AmbientStrength);
+        const u8 fogEnabled = env.FogEnabled ? 1u : 0u;
+        WriteBinary(out, fogEnabled);
+        WriteBinary(out, env.FogDensity);
+        WriteBinary(out, env.FogColor);
 
         const auto& alive = scene.GetAliveEntities();
         u32 validCount = 0;
@@ -944,6 +1114,9 @@ namespace RL
                     mask |= Mask_Relationship;
                 }
             }
+            if (scene.HasComponent<DistanceJointComponent>(ent)) mask |= Mask_DistanceJoint;
+            if (scene.HasComponent<HingeJointComponent>(ent)) mask |= Mask_HingeJoint;
+            if (scene.HasComponent<FixedJointComponent>(ent)) mask |= Mask_FixedJoint;
 
             WriteBinary(out, mask);
 
@@ -1120,6 +1293,50 @@ namespace RL
                 WriteBinary(out, parentId.GetHigh());
                 WriteBinary(out, parentId.GetLow());
             }
+
+            if (mask & Mask_DistanceJoint)
+            {
+                const auto& dj = scene.GetComponent<DistanceJointComponent>(ent);
+                const UUID targetId = GetEntityUUIDOrNil(scene, dj.TargetEntity);
+                WriteBinary(out, targetId.GetHigh());
+                WriteBinary(out, targetId.GetLow());
+                WriteBinary(out, dj.AnchorA);
+                WriteBinary(out, dj.AnchorB);
+                WriteBinary(out, dj.TargetDistance);
+                WriteBinary(out, dj.Stiffness);
+                WriteBinary(out, dj.Damping);
+                const u8 ad = dj.AutoDistance ? 1u : 0u;
+                WriteBinary(out, ad);
+            }
+
+            if (mask & Mask_HingeJoint)
+            {
+                const auto& hj = scene.GetComponent<HingeJointComponent>(ent);
+                const UUID targetId = GetEntityUUIDOrNil(scene, hj.TargetEntity);
+                WriteBinary(out, targetId.GetHigh());
+                WriteBinary(out, targetId.GetLow());
+                WriteBinary(out, hj.Anchor);
+                WriteBinary(out, hj.Axis);
+                WriteBinary(out, hj.LowerAngleLimit);
+                WriteBinary(out, hj.UpperAngleLimit);
+                WriteBinary(out, hj.MotorSpeed);
+                WriteBinary(out, hj.MaxMotorTorque);
+                const u8 hf = (hj.EnableLimits ? 1u : 0u) | (hj.EnableMotor ? 2u : 0u);
+                WriteBinary(out, hf);
+            }
+
+            if (mask & Mask_FixedJoint)
+            {
+                const auto& fj = scene.GetComponent<FixedJointComponent>(ent);
+                const UUID targetId = GetEntityUUIDOrNil(scene, fj.TargetEntity);
+                WriteBinary(out, targetId.GetHigh());
+                WriteBinary(out, targetId.GetLow());
+                WriteBinary(out, fj.RelativeOffset);
+                WriteBinary(out, fj.RelativeRotation);
+                WriteBinary(out, fj.BreakForce);
+                const u8 ff = fj.IsBroken ? 1u : 0u;
+                WriteBinary(out, ff);
+            }
         }
 
         return true;
@@ -1137,12 +1354,29 @@ namespace RL
         u32 count = 0;
 
         if (!ReadBinary(in, magic) || magic != BINARY_MAGIC) return false;
-        if (!ReadBinary(in, version) || version != BINARY_VERSION) return false;
+        if (!ReadBinary(in, version) || (version != 1 && version != BINARY_VERSION)) return false;
+
+        WorldEnvironment env{};
+        if (version >= 2)
+        {
+            u8 fogEnabled = 0;
+            if (!ReadBinary(in, env.SkyColor)) return false;
+            if (!ReadBinary(in, env.AmbientStrength)) return false;
+            if (!ReadBinary(in, fogEnabled)) return false;
+            if (!ReadBinary(in, env.FogDensity)) return false;
+            if (!ReadBinary(in, env.FogColor)) return false;
+            env.FogEnabled = (fogEnabled != 0);
+        }
+
         if (!ReadBinary(in, count)) return false;
 
         scene.Clear();
+        scene.GetEnvironment() = env;
 
         std::vector<std::pair<Entity, UUID>> pendingParents;
+        std::vector<std::pair<Entity, UUID>> pendingDistanceJoints;
+        std::vector<std::pair<Entity, UUID>> pendingHingeJoints;
+        std::vector<std::pair<Entity, UUID>> pendingFixedJoints;
         std::unordered_map<UUID, Entity> uuidToEntity;
 
         for (u32 i = 0; i < count; ++i)
@@ -1375,6 +1609,72 @@ namespace RL
                     pendingParents.emplace_back(entity, parentId);
                 }
             }
+
+            if (mask & Mask_DistanceJoint)
+            {
+                u64 tHi = 0;
+                u64 tLo = 0;
+                u8 ad = 0;
+                ReadBinary(in, tHi);
+                ReadBinary(in, tLo);
+                auto& dj = scene.AddComponent<DistanceJointComponent>(entity);
+                ReadBinary(in, dj.AnchorA);
+                ReadBinary(in, dj.AnchorB);
+                ReadBinary(in, dj.TargetDistance);
+                ReadBinary(in, dj.Stiffness);
+                ReadBinary(in, dj.Damping);
+                ReadBinary(in, ad);
+                dj.AutoDistance = (ad != 0);
+                const UUID targetId{ tHi, tLo };
+                if (!targetId.IsNil())
+                {
+                    pendingDistanceJoints.emplace_back(entity, targetId);
+                }
+            }
+
+            if (mask & Mask_HingeJoint)
+            {
+                u64 tHi = 0;
+                u64 tLo = 0;
+                u8 hf = 0;
+                ReadBinary(in, tHi);
+                ReadBinary(in, tLo);
+                auto& hj = scene.AddComponent<HingeJointComponent>(entity);
+                ReadBinary(in, hj.Anchor);
+                ReadBinary(in, hj.Axis);
+                ReadBinary(in, hj.LowerAngleLimit);
+                ReadBinary(in, hj.UpperAngleLimit);
+                ReadBinary(in, hj.MotorSpeed);
+                ReadBinary(in, hj.MaxMotorTorque);
+                ReadBinary(in, hf);
+                hj.EnableLimits = (hf & 1u) != 0;
+                hj.EnableMotor = (hf & 2u) != 0;
+                const UUID targetId{ tHi, tLo };
+                if (!targetId.IsNil())
+                {
+                    pendingHingeJoints.emplace_back(entity, targetId);
+                }
+            }
+
+            if (mask & Mask_FixedJoint)
+            {
+                u64 tHi = 0;
+                u64 tLo = 0;
+                u8 ff = 0;
+                ReadBinary(in, tHi);
+                ReadBinary(in, tLo);
+                auto& fj = scene.AddComponent<FixedJointComponent>(entity);
+                ReadBinary(in, fj.RelativeOffset);
+                ReadBinary(in, fj.RelativeRotation);
+                ReadBinary(in, fj.BreakForce);
+                ReadBinary(in, ff);
+                fj.IsBroken = (ff != 0);
+                const UUID targetId{ tHi, tLo };
+                if (!targetId.IsNil())
+                {
+                    pendingFixedJoints.emplace_back(entity, targetId);
+                }
+            }
         }
 
         for (const auto& [child, parentUUID] : pendingParents)
@@ -1382,6 +1682,30 @@ namespace RL
             if (auto it = uuidToEntity.find(parentUUID); it != uuidToEntity.end())
             {
                 scene.SetParent(child, it->second);
+            }
+        }
+
+        for (const auto& [ent, targetUUID] : pendingDistanceJoints)
+        {
+            if (auto it = uuidToEntity.find(targetUUID); it != uuidToEntity.end())
+            {
+                scene.GetComponent<DistanceJointComponent>(ent).TargetEntity = it->second;
+            }
+        }
+
+        for (const auto& [ent, targetUUID] : pendingHingeJoints)
+        {
+            if (auto it = uuidToEntity.find(targetUUID); it != uuidToEntity.end())
+            {
+                scene.GetComponent<HingeJointComponent>(ent).TargetEntity = it->second;
+            }
+        }
+
+        for (const auto& [ent, targetUUID] : pendingFixedJoints)
+        {
+            if (auto it = uuidToEntity.find(targetUUID); it != uuidToEntity.end())
+            {
+                scene.GetComponent<FixedJointComponent>(ent).TargetEntity = it->second;
             }
         }
 

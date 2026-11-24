@@ -15,6 +15,8 @@
 #include "Scene/SceneSerializer.hpp"
 #include "Scene/Camera.hpp"
 #include "Scene/Systems/RenderSystem.hpp"
+#include "Scene/Systems/AnimationSystem.hpp"
+#include "Assets/AssetImporters.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/LuaEntityBridge.hpp"
 #include "Scene/StressTest.hpp"
@@ -135,6 +137,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     VFS::Mount("shaders/", shadersRoot);
     VFS::Mount("scripts://", scriptsRoot);
     VFS::PrintMounts();
+    AssetManager::RegisterDefaultImporters();
 
     if (smokeTest)
     {
@@ -358,6 +361,112 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
             RL_LOG_INFO("Smoke test: DistanceJoint, HingeJoint, and FixedJoint constraints validated successfully.");
         }
+
+        {
+            auto scriptAsset = AssetManager::Load<ScriptAsset>("scripts://main.lua");
+            auto meshAsset = AssetManager::Load<MeshAsset>("assets://models/cube.gltf");
+            auto texAsset = AssetManager::Load<TextureAsset>("assets://textures/gem.png");
+            if (!scriptAsset.IsValid() || scriptAsset->source.empty() ||
+                !meshAsset.IsValid() || meshAsset->vertices.empty() || meshAsset->indices.empty() ||
+                !texAsset.IsValid() || texAsset->width == 0 || texAsset->height == 0)
+            {
+                RL_LOG_FATAL("Alpha 3 AssetManager concrete importer validation failed");
+                return -90;
+            }
+
+            Scene animTestScene;
+            AnimationSystem animSys;
+            animTestScene.SetAnimationSystem(&animSys);
+            animSys.CreateProceduralTestRig("Alpha3TestRig");
+
+            Entity skelEnt = animTestScene.CreateEntity("SkelBot");
+            auto& sk = animTestScene.AddComponent<SkinnedMeshComponent>(skelEnt);
+            sk.ModelPath = "Alpha3TestRig";
+            sk.Play("TestAnim");
+            animTestScene.Update(0.25f);
+
+            const auto& postSk = animTestScene.GetComponent<SkinnedMeshComponent>(skelEnt);
+            if (postSk.BonePalette.size() < 2)
+            {
+                RL_LOG_FATAL("Alpha 3 AnimationSystem BonePalette validation failed: size {}", postSk.BonePalette.size());
+                return -91;
+            }
+            const DirectX::XMFLOAT4X4& b1 = postSk.BonePalette[1];
+            const f32 diffFromId = std::abs(b1._11 - 1.0f) + std::abs(b1._12) + std::abs(b1._13) +
+                                   std::abs(b1._21) + std::abs(b1._22 - 1.0f) + std::abs(b1._41) + std::abs(b1._42);
+            if (diffFromId < 1e-4f)
+            {
+                RL_LOG_FATAL("Alpha 3 AnimationSystem FK bone interpolation did not update child bone matrix");
+                return -92;
+            }
+
+            Scene serScene;
+            serScene.GetEnvironment().SkyColor = { 0.12f, 0.22f, 0.32f, 1.0f };
+            serScene.GetEnvironment().AmbientStrength = 1.65f;
+            serScene.GetEnvironment().FogEnabled = true;
+            serScene.GetEnvironment().FogDensity = 0.075f;
+            serScene.GetEnvironment().FogColor = { 0.4f, 0.5f, 0.6f };
+
+            Entity jA = serScene.CreateEntity("JointNodeA");
+            Entity jB = serScene.CreateEntity("JointNodeB");
+            auto& dj = serScene.AddComponent<DistanceJointComponent>(jA);
+            dj.TargetEntity = jB;
+            dj.TargetDistance = 3.5f;
+            dj.AutoDistance = false;
+            auto& hj = serScene.AddComponent<HingeJointComponent>(jA);
+            hj.TargetEntity = jB;
+            hj.EnableLimits = true;
+            hj.EnableMotor = true;
+            hj.MotorSpeed = 2.0f;
+            auto& fj = serScene.AddComponent<FixedJointComponent>(jA);
+            fj.TargetEntity = jB;
+            fj.BreakForce = 42.0f;
+
+            const std::string jPath = (std::filesystem::temp_directory_path() / "rlengine_a3_joints.json").string();
+            const std::string bPath = (std::filesystem::temp_directory_path() / "rlengine_a3_joints.bin").string();
+            if (!SceneSerializer::Save(serScene, jPath) || !SceneSerializer::Save(serScene, bPath))
+            {
+                RL_LOG_FATAL("Alpha 3 Joint/Environment Save failed");
+                return -93;
+            }
+
+            Scene loadedJ, loadedB;
+            const bool loadJOk = SceneSerializer::Load(loadedJ, nullptr, jPath);
+            const bool loadBOk = SceneSerializer::Load(loadedB, nullptr, bPath);
+            std::error_code a3Ec;
+            std::filesystem::remove(jPath, a3Ec);
+            std::filesystem::remove(bPath, a3Ec);
+            if (!loadJOk || !loadBOk || loadedJ.GetAliveEntityCount() != 2 || loadedB.GetAliveEntityCount() != 2)
+            {
+                RL_LOG_FATAL("Alpha 3 Joint/Environment Load failed");
+                return -94;
+            }
+
+            auto verifyLoaded = [](const Scene& s) -> bool {
+                const auto& env = s.GetEnvironment();
+                if (!env.FogEnabled || std::abs(env.FogDensity - 0.075f) > 1e-4f ||
+                    std::abs(env.AmbientStrength - 1.65f) > 1e-4f || std::abs(env.SkyColor.x - 0.12f) > 1e-4f)
+                {
+                    return false;
+                }
+                const auto ents = s.GetAliveEntities();
+                const auto* ldj = s.TryGetComponent<DistanceJointComponent>(ents[0]);
+                const auto* lhj = s.TryGetComponent<HingeJointComponent>(ents[0]);
+                const auto* lfj = s.TryGetComponent<FixedJointComponent>(ents[0]);
+                if (!ldj || !lhj || !lfj) return false;
+                if (ldj->TargetEntity != ents[1] || lhj->TargetEntity != ents[1] || lfj->TargetEntity != ents[1]) return false;
+                if (std::abs(ldj->TargetDistance - 3.5f) > 1e-4f || !lhj->EnableMotor || std::abs(lfj->BreakForce - 42.0f) > 1e-4f) return false;
+                return true;
+            };
+
+            if (!verifyLoaded(loadedJ) || !verifyLoaded(loadedB))
+            {
+                RL_LOG_FATAL("Alpha 3 Joint/Environment round-trip value mismatch");
+                return -95;
+            }
+
+            RL_LOG_INFO("Smoke test Alpha 3: AssetManager, AnimationSystem, Joints & WorldEnvironment serialization validated successfully.");
+        }
     }
 
     WindowDesc windowDesc{
@@ -435,6 +544,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
         scene.SetPhysicsSystem(&editorLayer.GetSceneBuilder().GetPhysicsSystem());
 
+        AnimationSystem animationSystem;
+        scene.SetAnimationSystem(&animationSystem);
+
         auto audioInitRes = AudioEngine::Get().Initialize();
         if (!audioInitRes)
         {
@@ -452,9 +564,16 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         scene.GetComponent<TransformComponent>(cube).Position = { 0.0f, 0.0f, 0.0f };
 
         Entity child = scene.CreateEntity("ChildCube");
-        scene.AddComponent<MeshComponent>(child, "Cube");
+        scene.AddComponent<MeshComponent>(child, "Sphere");
         scene.GetComponent<TransformComponent>(child).Position = { 1.5f, 0.5f, 0.0f };
         scene.SetParent(child, cube);
+
+        if (smokeTest)
+        {
+            Entity planeEnt = scene.CreateEntity("SmokePlane");
+            scene.AddComponent<MeshComponent>(planeEnt, "Plane");
+            scene.GetComponent<TransformComponent>(planeEnt).Position = { 0.0f, -1.0f, 0.0f };
+        }
 
         Timer& timer = window.GetTimer();
         timer.Reset();
@@ -466,6 +585,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         {
             Input::NewFrame();
             EventBus::DispatchDeferred();
+            AssetManager::PollHotReload();
             AudioEngine::Get().Update();
             if (!window.ProcessMessages() || window.ShouldClose()) break;
 
@@ -505,7 +625,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             editorLayer.RenderUI(timer, dx11, scene, static_cast<u32>(scene.GetAliveEntityCount()), nullptr, nullptr, &scriptEngine);
 
             dx11.BeginFrame();
-            dx11.ClearRenderTarget(0.04f, 0.06f, 0.09f, 1.0f);
+            const auto& dx11Sky = scene.GetEnvironment().SkyColor;
+            dx11.ClearRenderTarget(dx11Sky.x, dx11Sky.y, dx11Sky.z, dx11Sky.w);
             dx11.RenderScene(scene);
             editorLayer.EndFrameDX11();
             dx11.EndFrame();
@@ -515,6 +636,12 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
             if (smokeTest && timer.GetFrameCount() >= maxTestFrames)
             {
+                if (!dx11.HasCachedMesh("Sphere") || dx11.GetCachedMeshIndexCount("Sphere") != 9216 ||
+                    !dx11.HasCachedMesh("Plane") || dx11.GetCachedMeshIndexCount("Plane") != 600)
+                {
+                    RL_LOG_FATAL("DirectX 11 smoke test failed: multi-mesh cache missing Sphere/Plane buffers");
+                    return -96;
+                }
                 const usize originalCount = scene.GetAliveEntityCount();
                 const std::string jsonPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.json").string();
                 const std::string binPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.bin").string();
@@ -533,13 +660,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
                         originalCount, jsonScene.GetAliveEntityCount(), binScene.GetAliveEntityCount());
                     return -12;
                 }
-                RL_LOG_INFO("DirectX 11 Smoke test completed successfully ({} frames rendered, entity count verified: {}).", timer.GetFrameCount(), originalCount);
+                RL_LOG_INFO("DirectX 11 Smoke test completed successfully ({} frames rendered, multi-mesh cache + entity count verified: {}).", timer.GetFrameCount(), originalCount);
                 break;
             }
         }
         window.SetResizeCallback(nullptr);
         dx11.WaitForGPU();
         editorLayer.Shutdown();
+        AssetManager::Shutdown();
         AudioEngine::Get().Shutdown();
         scriptEngine.Shutdown();
         dx11.Shutdown();
@@ -696,6 +824,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     }
     scene.SetParticleSystem(&editorLayer.GetSceneBuilder().GetParticleSystem());
     scene.SetPhysicsSystem(&editorLayer.GetSceneBuilder().GetPhysicsSystem());
+
+    AnimationSystem animationSystem;
+    scene.SetAnimationSystem(&animationSystem);
 
     auto audioInitRes = AudioEngine::Get().Initialize();
     if (!audioInitRes)
@@ -1217,6 +1348,33 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         scene.GetCamera().SetProjectionType(CameraProjection::Perspective);
         Entity cubeEnt = scene.CreateEntity("Cube");
         scene.AddComponent<MeshComponent>(cubeEnt, "Cube");
+
+        Entity spotEnt = scene.CreateEntity("SmokeSpotLight");
+        auto& spotTr = scene.GetComponent<TransformComponent>(spotEnt);
+        spotTr.Position = { 2.0f, 4.0f, -2.0f };
+        spotTr.Rotation = { 0.6f, 0.0f, 0.0f };
+        auto& spotLc = scene.AddComponent<LightComponent>(spotEnt);
+        spotLc.Type = LightType::Spot;
+        spotLc.SpotAngle = 35.0f;
+        spotLc.Intensity = 6.0f;
+        spotLc.Range = 25.0f;
+
+        if (!scriptEngine.ExecuteString(
+                "local s = RL.Scene.CreateEntity('LuaAnimTest')\n"
+                "s:PlayAnimation('RunAnim', 1.5)\n"
+                "local playing1 = s:IsAnimationPlaying()\n"
+                "s:SetAnimationSpeed(2.25)\n"
+                "s:StopAnimation()\n"
+                "local playing2 = s:IsAnimationPlaying()\n"
+                "_G.luaAnimOk = (playing1 == true and playing2 == false)\n"))
+        {
+            return -97;
+        }
+        lua_State* animL = scriptEngine.GetLuaState();
+        lua_getglobal(animL, "luaAnimOk");
+        const bool luaAnimOk = lua_toboolean(animL, -1) != 0;
+        lua_pop(animL, 1);
+        if (!luaAnimOk) return -98;
     }
 
     Timer& timer = window.GetTimer();
@@ -1233,6 +1391,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             renderSystem.RequestShaderReload();
         }
         EventBus::DispatchDeferred();
+        AssetManager::PollHotReload();
         AudioEngine::Get().Update();
 
         if (!window.ProcessMessages() || window.ShouldClose())
@@ -1278,7 +1437,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
         device.BeginFrame();
 
-        device.ClearRenderTarget(0.04f, 0.06f, 0.09f, 1.0f);
+        const auto& dx12Sky = scene.GetEnvironment().SkyColor;
+        device.ClearRenderTarget(dx12Sky.x, dx12Sky.y, dx12Sky.z, dx12Sky.w);
 
         ID3D12GraphicsCommandList* cmdList = device.GetCommandList();
 
@@ -1329,6 +1489,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     device.WaitForGPU();
 
     editorLayer.Shutdown();
+    AssetManager::Shutdown();
     AudioEngine::Get().Shutdown();
     renderSystem.Destroy();
     scriptEngine.Shutdown();

@@ -25,6 +25,8 @@ This document provides an in-depth, verified technical overview of the architect
 * **Shader Compilation**:
   * **DXC API (`dxcompiler.dll` + `dxil.dll`)**: Compiles modern HLSL targeting Shader Model 6.5 (`vs_6_5`, `ps_6_5`).
   * **D3DCompile API (`d3dcompiler_47.dll`)**: Compiles legacy HLSL targeting Shader Model 5.0 (`vs_5_0`, `ps_5_0`).
+* **Skeletal Animation (`AnimationSystem`)**: Hierarchical glTF skeleton & TRS keyframe importer (`GLTFLoader`), forward kinematics interpolation (`XMVectorLerp`/`XMQuaternionSlerp`), GPU `BonePalette` upload (up to 128 bones), and Lua OOP playback controls.
+* **Multi-Light & Atmosphere**: Up to 16 dynamic Point/Spot lights (`DynamicLightData` structured buffer), SpotLight cone falloff, `WorldEnvironment` exponential fog/sky/ambient parameters, and `SceneShadingMode` (`Wireframe`, `Solid`, `MaterialPreview`, `Rendered`).
 * **Entity Component System**: Generational Sparse-Set ECS tested at 100,000 active entities (dynamic instance buffer starting at 16,384 instances and doubling on demand) with $O(1)$ component operations, dense memory iteration, and scene graph parent-child transforms.
 * **Physics Engine**: Deterministic fixed-step 60Hz solver with sub-stepping (`kSubSteps = 2`), spatial hash broadphase grid, momentum-conserving impulse resolution, restitution, ground collision, and slab AABB ray-box / ray-sphere intersection testing.
 * **Audio Engine**: 3D spatial positional audio powered by the `miniaudio` library.

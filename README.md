@@ -1,6 +1,6 @@
-# RLengine 7.2 Alpha 2 (Pre-Release)
+# RLengine 7.2 Alpha 3 (Pre-Release)
 
-> **Release Stage**: 🧪 **Alpha (Alpha 2 - Pre-Release)**  
+> **Release Stage**: 🧪 **Alpha (Alpha 3 - Pre-Release)**  
 > **Build Target**: C++23 | Visual Studio 18 2026 / 2022 | DirectX 12 (FL 12_1) & DirectX 11 (FL 11_0)  
 > **Code Quality**: Strict Zero Comments Policy enforced across all source, header, shader, script, and build configuration files.
 
@@ -8,35 +8,36 @@
 
 ## 📌 Overview & Development Status
 
-**RLengine 7.2 Alpha 2** represents milestone 2 of the planned 5–7 alpha phases towards the final RLengine 7.2 release. Engineered to modern **C++23** standards with an emphasis on physical accuracy, material realism, and professional workflow isolation, 7.2 Alpha 2 introduces comprehensive physics constraint and joint simulation, live background shader hot-reloading with non-blocking Windows I/O, full 3D spatial audio scripting with object-oriented Lua bindings, and multi-layer glTF PBR material autoloading.
+**RLengine 7.2 Alpha 3** represents milestone 3 of the planned 5–7 alpha phases towards the final RLengine 7.2 release. Engineered to modern **C++23** standards, Alpha 3 builds on Alpha 2's physics constraints and live shader hot-reloading by adding **end-to-end skeletal animation & glTF skinning**, **multi-light DX12 shading (up to 16 dynamic Point/Spot lights + atmospheric fog + viewport shading modes)**, **DirectX 11 multi-mesh & environment parity**, **concrete `AssetManager` importers (`MeshAsset`, `TextureAsset`, `ScriptAsset`)**, **complete Joints & `WorldEnvironment` serialization/Undo**, and **Blender-style 3D viewport navigation**.
 
 All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (Shader Model 6.5 DXIL)** and **DirectX 11 (Shader Model 5.0 DXBC)** pipelines.
 
 ---
 
-## 🔍 Differences: 7.2 Alpha 2 vs Alpha 1 vs 7.1
+## 🔍 Differences: 7.2 Alpha 3 vs Alpha 2 vs Alpha 1 vs 7.1
 
-### 1. Key Evolution: 7.2 Alpha 2 vs 7.2 Alpha 1
+### 1. Key Evolution: 7.2 Alpha 3 vs 7.2 Alpha 2
 
-| Architectural Subsystem | RLengine 7.2 Alpha 1 | RLengine 7.2 Alpha 2 (New) | Impact & Improvements |
+| Architectural Subsystem | RLengine 7.2 Alpha 2 | RLengine 7.2 Alpha 3 (New) | Impact & Improvements |
 | :--- | :--- | :--- | :--- |
-| **Physics Constraints & Joints** | Rigid dynamic impulses and triggers only | **DistanceJoint**, **HingeJoint**, **FixedJoint** (`BreakForce`) | Realistic mechanical connections, hinged doors/levers with angular limits & motors, and breakable bonds with trigger events. |
-| **Shader Workflow** | Offline compile at startup only | **Live Shader Hot-Reloading** (`FileWatcher` + `ReloadPipelines`) | Background directory monitoring with Windows overlapped I/O; instant pipeline swap upon editing `.hlsl` files or pressing F5. |
-| **Spatial Audio & Lua** | Basic playback | **3D Spatial Audio ECS & OOP Lua Bridge** | `AudioListenerComponent`, `AudioSourceComponent`, `entity:PlaySound()`, `entity:StopSound()`, `RL.Audio.Play3D()`. |
-| **glTF Material Import** | Basic single-texture loader | **Multi-Layer PBR glTF Autoloading** | Full extraction of normal maps, metallic-roughness maps, emissive textures and factors into `MaterialComponent`. |
+| **Skeletal Animation & Skinning** | Stub `SkinnedMeshComponent` | **Full glTF TRS Animation + `AnimationSystem` + GPU Upload** | Hierarchical FK bone solver (`XMVectorLerp`/`XMQuaternionSlerp`), up to 128 bones uploaded to GPU, and Lua OOP (`entity:PlayAnimation()`). |
+| **Lighting & Atmosphere** | Single light, static sky color | **16 Dynamic Point/Spot Lights + `WorldEnvironment` Fog** | Structured light buffer (`t1, space1`), SpotLight cone falloff, exponential atmospheric fog, and `ViewportShadingMode` (`Wireframe`..`Rendered`). |
+| **DX11 Backend Parity** | Cube primitive only | **`DX11MeshCache` + Fog + Quads + Wireframe** | Supports Cube, Sphere, Plane, Grid, Quad, and CPU/glTF meshes on legacy DX11 GPUs alongside alpha-blended billboards and environment fog. |
+| **Asset Pipeline** | Abstract `AssetManager` | **Concrete `MeshAsset`, `TextureAsset`, `ScriptAsset`** | Typed glTF, RGBA texture, and Lua importers with thread-safe queued hot-reload events (`PollHotReload`). |
+| **Serialization & Viewport UX** | Missing joints in save/undo; WASD camera | **Binary v2 + JSON Joints/Env + Blender MMB Orbit/Pan/Zoom** | Full persistence & undo for Distance/Hinge/Fixed joints & WorldEnvironment, gizmo snapping, AABB picking, and Inspector UI. |
 
-### 2. Comprehensive Comparison: 7.2 Alpha 2 vs 7.1
+### 2. Comprehensive Comparison: 7.2 Alpha 3 vs 7.1
 
-| Component | RLengine 7.1 | RLengine 7.2 Alpha 2 | Evolution & Benefits |
+| Component | RLengine 7.1 | RLengine 7.2 Alpha 3 | Evolution & Benefits |
 | :--- | :--- | :--- | :--- |
-| **Collision Resolution** | Discrete 60Hz AABB solver | **Swept-Sphere CCD + 15-Axis SAT OBB** | Eliminates projectile tunneling; accurate 3D angular momentum integration for arbitrary oriented boxes. |
-| **Joint Constraints** | None | **DistanceJoint, HingeJoint, FixedJoint** | Mechanical linkages, angular limits, motors, and breakable bonds with lifecycle events. |
-| **Sensor / Trigger Volumes** | None (impulse separation only) | **Trigger Colliders (`IsTrigger`)** | Overlap sensor zones with `Enter`, `Stay`, `Exit` lifecycle events without physical interference. |
-| **Material Pipeline** | Basic Albedo, Roughness, Metallic | **Full Tangent PBR + Multi-Layer glTF** | Tangent-space Normal Mapping (TBN), metallic-roughness maps, and emissive textures across DX12 and DX11. |
-| **Shader Pipeline** | Compile once at startup; restart required | **Live Overlapped Hot-Reloading** | Edit `.hlsl` live during gameplay with atomic GPSO swapping, syntax error resilience, and F5 manual reload. |
-| **Audio Subsystem** | Basic flat playback | **3D Spatial Positional Audio + Lua OOP** | Distance-attenuated 3D emitters, listener orientation tracking, and object-oriented Lua entity audio methods. |
+| **Collision & Constraints** | Discrete 60Hz AABB solver | **Swept-Sphere CCD + 15-Axis SAT OBB + Joints** | Anti-tunneling CCD, 3D angular impulses, Triggers, and Distance/Hinge/Fixed joints with `BreakForce` & serialization. |
+| **Animation Pipeline** | Static transforms only | **glTF Hierarchical Skinning + `AnimationSystem`** | Keyframe TRS animation channels, FK bone matrices, GPU `BonePalette` upload, and Lua playback controls. |
+| **Lighting & Atmosphere** | Single directional/point light | **4-Cascade CSM + 16 Dynamic Point/Spot Lights + Fog** | Dynamic light array (`DynamicLightData`), Spot cone falloff, exponential sky fog, and live viewport shading modes. |
+| **DX11 Legacy Backend** | Cube-only basic pass | **Full Multi-Mesh (`DX11MeshCache`), Shadows, Fog & Quads** | Procedural & glTF mesh parity, PCF directional shadows, billboards, wireframe mode, and multi-light SM 5.0 shading. |
+| **Asset & Shader Workflow** | Compile/load once at startup | **Live Overlapped Shader Reload + Concrete `AssetManager`** | Atomic HLSL GPSO swapping (`F5`) plus `MeshAsset`, `TextureAsset`, `ScriptAsset` importers with hot-reload queue. |
+| **Audio Subsystem** | Basic flat playback | **3D Spatial Positional Audio + Lua OOP** | Distance-attenuated 3D emitters, listener orientation tracking, and `entity:PlaySound()` Lua methods. |
 | **Event Bus Architecture** | Tight direct calls | **Type-Erased EventBus + `DepthGuard`** | Decoupled publish-subscribe messaging; Lua scripting bridge with recursive cascade protection. |
-| **Editor Ergonomics** | Monolithic overlapping windows | **Blender 4.x DCC Station + Floating REPL** | Isolated viewports, non-colliding panels, deep undo/redo snapshots, and floating non-dockable REPL terminal. |
+| **Editor Ergonomics** | Monolithic overlapping windows | **Blender 4.x DCC Station + MMB Navigation + Floating REPL** | Dockable panels, MMB Orbit / Shift+MMB Pan / Scroll Zoom, snap toggle, AABB picking, and complete component inspectors. |
 | **Hardware Telemetry** | Basic logs | **Real-Time `MemoryStats` (PSAPI)** | Live tracking of Working Set RAM, Private Committed Bytes, and subsystem allocations. |
 
 ---
@@ -121,7 +122,7 @@ cmake --build build --config Release --parallel
 
 ## 📦 Pre-Release Archive Contents
 
-The pre-release binary archive (`RLengine-7.2-Alpha-2-Windows-x64.zip`) contains:
+The pre-release binary archive (`RLengine-7.2-Alpha-3-Windows-x64.zip`) contains:
 * `RLengine7.2.exe`: Optimized Release executable.
 * `dxcompiler.dll`, `dxil.dll`: Official Microsoft DirectX Shader Compiler runtime.
 * `shaders/`: DX12 and DX11 HLSL shaders (`mesh3d.hlsl`, `quad.hlsl`, `grid3d.hlsl`, `shadow_depth.hlsl`).

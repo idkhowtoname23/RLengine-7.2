@@ -9,6 +9,9 @@
 #include <optional>
 #include <functional>
 #include <string>
+#include <format>
+#include <algorithm>
+#include <cstring>
 
 namespace RL::Editor
 {
@@ -69,6 +72,16 @@ namespace RL::Editor
             DrawTransformComponent(ent);
             DrawMeshComponent(ent);
             DrawQuadRenderComponent(ent);
+            DrawLightComponent(ent);
+            DrawMaterialComponent(ent);
+            DrawRigidBodyComponent(ent);
+            DrawBoxColliderComponent(ent);
+            DrawSphereColliderComponent(ent);
+            DrawDistanceJointComponent(ent);
+            DrawHingeJointComponent(ent);
+            DrawFixedJointComponent(ent);
+            DrawAudioSourceComponent(ent);
+            DrawAudioListenerComponent(ent);
             DrawScriptComponent(ent);
 
             ImGui::Spacing();
@@ -100,6 +113,56 @@ namespace RL::Editor
                 {
                     if (!m_scene->HasComponent<QuadRenderComponent>(ent))
                         m_scene->AddComponent<QuadRenderComponent>(ent);
+                }
+                if (ImGui::MenuItem("Light"))
+                {
+                    if (!m_scene->HasComponent<LightComponent>(ent))
+                        m_scene->AddComponent<LightComponent>(ent);
+                }
+                if (ImGui::MenuItem("Material"))
+                {
+                    if (!m_scene->HasComponent<MaterialComponent>(ent))
+                        m_scene->AddComponent<MaterialComponent>(ent);
+                }
+                if (ImGui::MenuItem("RigidBody"))
+                {
+                    if (!m_scene->HasComponent<RigidBodyComponent>(ent))
+                        m_scene->AddComponent<RigidBodyComponent>(ent);
+                }
+                if (ImGui::MenuItem("Box Collider"))
+                {
+                    if (!m_scene->HasComponent<BoxColliderComponent>(ent))
+                        m_scene->AddComponent<BoxColliderComponent>(ent);
+                }
+                if (ImGui::MenuItem("Sphere Collider"))
+                {
+                    if (!m_scene->HasComponent<SphereColliderComponent>(ent))
+                        m_scene->AddComponent<SphereColliderComponent>(ent);
+                }
+                if (ImGui::MenuItem("Distance Joint"))
+                {
+                    if (!m_scene->HasComponent<DistanceJointComponent>(ent))
+                        m_scene->AddComponent<DistanceJointComponent>(ent);
+                }
+                if (ImGui::MenuItem("Hinge Joint"))
+                {
+                    if (!m_scene->HasComponent<HingeJointComponent>(ent))
+                        m_scene->AddComponent<HingeJointComponent>(ent);
+                }
+                if (ImGui::MenuItem("Fixed Joint"))
+                {
+                    if (!m_scene->HasComponent<FixedJointComponent>(ent))
+                        m_scene->AddComponent<FixedJointComponent>(ent);
+                }
+                if (ImGui::MenuItem("Audio Source"))
+                {
+                    if (!m_scene->HasComponent<AudioSourceComponent>(ent))
+                        m_scene->AddComponent<AudioSourceComponent>(ent);
+                }
+                if (ImGui::MenuItem("Audio Listener"))
+                {
+                    if (!m_scene->HasComponent<AudioListenerComponent>(ent))
+                        m_scene->AddComponent<AudioListenerComponent>(ent);
                 }
                 if (ImGui::MenuItem("Script"))
                 {
@@ -234,6 +297,420 @@ namespace RL::Editor
                 qr.TextureIndex = static_cast<u32>(std::max(0, texIdx));
             }
 
+            ImGui::Spacing();
+        }
+
+        void DrawTargetEntitySelector(const char* comboId, Entity owner, Entity& target)
+        {
+            std::string preview = "None";
+            if (target.IsValid() && m_scene->IsAlive(target))
+            {
+                std::string tName = m_scene->HasComponent<TagComponent>(target)
+                    ? m_scene->GetComponent<TagComponent>(target).Tag
+                    : "Entity";
+                preview = std::format("{} (#{})", tName, target.GetIndex());
+            }
+
+            if (ImGui::BeginCombo(comboId, preview.c_str()))
+            {
+                if (ImGui::Selectable("None", !target.IsValid()))
+                {
+                    target = Entity{};
+                }
+                for (Entity candidate : m_scene->GetAliveEntities())
+                {
+                    if (!m_scene->IsAlive(candidate) || candidate == owner) continue;
+                    std::string cName = m_scene->HasComponent<TagComponent>(candidate)
+                        ? m_scene->GetComponent<TagComponent>(candidate).Tag
+                        : "Entity";
+                    const std::string itemLabel = std::format("{} (#{})##{}", cName, candidate.GetIndex(), candidate.GetID());
+                    const bool isSelected = (target == candidate);
+                    if (ImGui::Selectable(itemLabel.c_str(), isSelected))
+                    {
+                        target = candidate;
+                    }
+                    if (isSelected)
+                    {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        void DrawLightComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<LightComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Light", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<LightComponent>(ent); return; }
+
+            auto& lc = m_scene->GetComponent<LightComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Type", 90.0f);
+            const char* types[] = { "Point", "Directional", "Spot" };
+            int tIdx = static_cast<int>(lc.Type);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("##light_type", &tIdx, types, IM_ARRAYSIZE(types)))
+            {
+                lc.Type = static_cast<LightType>(tIdx);
+            }
+
+            LabeledField("Color", 90.0f);
+            float col[3] = { lc.Color.x, lc.Color.y, lc.Color.z };
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::ColorEdit3("##light_color", col))
+            {
+                lc.Color = { col[0], col[1], col[2] };
+            }
+
+            LabeledField("Intensity", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##light_intensity", &lc.Intensity, 0.1f, 0.0f, 100.0f);
+
+            LabeledField("Range", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##light_range", &lc.Range, 0.2f, 0.1f, 500.0f);
+
+            if (lc.Type == LightType::Spot)
+            {
+                LabeledField("Spot Angle", 90.0f);
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderFloat("##light_spot_angle", &lc.SpotAngle, 1.0f, 179.0f);
+            }
+
+            LabeledField("Shadows", 90.0f);
+            ImGui::Checkbox("##light_shadows", &lc.CastShadows);
+            ImGui::Spacing();
+        }
+
+        void DrawMaterialComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<MaterialComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Material", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<MaterialComponent>(ent); return; }
+
+            auto& mat = m_scene->GetComponent<MaterialComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Base Color", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::ColorEdit4("##mat_base", &mat.BaseColor.x))
+            {
+                mat.AlbedoColor = mat.BaseColor;
+            }
+
+            LabeledField("Metallic", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##mat_metallic", &mat.Metallic, 0.0f, 1.0f);
+
+            LabeledField("Roughness", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##mat_roughness", &mat.Roughness, 0.0f, 1.0f);
+
+            LabeledField("AO", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##mat_ao", &mat.AO, 0.0f, 1.0f);
+
+            LabeledField("Normal Str", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##mat_normal", &mat.NormalStrength, 0.0f, 2.0f);
+
+            LabeledField("Emission", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##mat_emission", &mat.EmissionStrength, 0.0f, 20.0f);
+
+            LabeledField("Emissive Col", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::ColorEdit3("##mat_emissive_col", &mat.EmissiveColor.x);
+
+            LabeledField("Emissive Int", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##mat_emissive_int", &mat.EmissiveIntensity, 0.1f, 0.0f, 50.0f);
+            ImGui::Spacing();
+        }
+
+        void DrawRigidBodyComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<RigidBodyComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("RigidBody", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<RigidBodyComponent>(ent); return; }
+
+            auto& rb = m_scene->GetComponent<RigidBodyComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Body Type", 100.0f);
+            const char* bodyTypes[] = { "Static", "Dynamic", "Kinematic" };
+            int bType = static_cast<int>(rb.Type);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("##rb_type", &bType, bodyTypes, IM_ARRAYSIZE(bodyTypes)))
+            {
+                rb.Type = static_cast<BodyType>(bType);
+            }
+
+            LabeledField("Mass", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##rb_mass", &rb.Mass, 0.1f, 0.001f, 10000.0f);
+
+            LabeledField("Restitution", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##rb_rest", &rb.Restitution, 0.0f, 1.0f);
+
+            LabeledField("Friction", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##rb_fric", &rb.Friction, 0.0f, 1.0f);
+
+            LabeledField("Lin Damping", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##rb_ldamp", &rb.LinearDamping, 0.01f, 0.0f, 10.0f);
+
+            LabeledField("Ang Damping", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##rb_adamp", &rb.AngularDamping, 0.01f, 0.0f, 10.0f);
+
+            LabeledField("Use Gravity", 100.0f);
+            ImGui::Checkbox("##rb_grav", &rb.UseGravity);
+
+            LabeledField("Gravity Scale", 100.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##rb_gscale", &rb.GravityScale, 0.05f, -5.0f, 5.0f);
+            ImGui::Spacing();
+        }
+
+        void DrawBoxColliderComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<BoxColliderComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Box Collider", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<BoxColliderComponent>(ent); return; }
+
+            auto& bc = m_scene->GetComponent<BoxColliderComponent>(ent);
+            ImGui::Spacing();
+            LabeledField("Half Size", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##bc_half", &bc.HalfSize.x, 0.05f, 0.01f, 100.0f);
+
+            LabeledField("Offset", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##bc_offset", &bc.Offset.x, 0.05f);
+
+            LabeledField("Is Trigger", 90.0f);
+            ImGui::Checkbox("##bc_trig", &bc.IsTrigger);
+            ImGui::Spacing();
+        }
+
+        void DrawSphereColliderComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<SphereColliderComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Sphere Collider", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<SphereColliderComponent>(ent); return; }
+
+            auto& sc = m_scene->GetComponent<SphereColliderComponent>(ent);
+            ImGui::Spacing();
+            LabeledField("Radius", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##sc_rad", &sc.Radius, 0.05f, 0.01f, 100.0f);
+
+            LabeledField("Offset", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##sc_offset", &sc.Offset.x, 0.05f);
+
+            LabeledField("Is Trigger", 90.0f);
+            ImGui::Checkbox("##sc_trig", &sc.IsTrigger);
+            ImGui::Spacing();
+        }
+
+        void DrawDistanceJointComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<DistanceJointComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Distance Joint", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<DistanceJointComponent>(ent); return; }
+
+            auto& dj = m_scene->GetComponent<DistanceJointComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Target", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            DrawTargetEntitySelector("##dj_target", ent, dj.TargetEntity);
+
+            LabeledField("Anchor A", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##dj_anchor_a", &dj.AnchorA.x, 0.05f);
+
+            LabeledField("Anchor B", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##dj_anchor_b", &dj.AnchorB.x, 0.05f);
+
+            LabeledField("Auto Dist", 95.0f);
+            ImGui::Checkbox("##dj_autodist", &dj.AutoDistance);
+
+            LabeledField("Distance", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##dj_dist", &dj.TargetDistance, 0.05f, 0.0f, 1000.0f);
+
+            LabeledField("Stiffness", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##dj_stiff", &dj.Stiffness, 0.0f, 1.0f);
+
+            LabeledField("Damping", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##dj_damp", &dj.Damping, 0.0f, 1.0f);
+            ImGui::Spacing();
+        }
+
+        void DrawHingeJointComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<HingeJointComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Hinge Joint", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<HingeJointComponent>(ent); return; }
+
+            auto& hj = m_scene->GetComponent<HingeJointComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Target", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            DrawTargetEntitySelector("##hj_target", ent, hj.TargetEntity);
+
+            LabeledField("Anchor", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##hj_anchor", &hj.Anchor.x, 0.05f);
+
+            LabeledField("Axis", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##hj_axis", &hj.Axis.x, 0.05f);
+
+            LabeledField("Limits", 95.0f);
+            ImGui::Checkbox("##hj_lim", &hj.EnableLimits);
+            if (hj.EnableLimits)
+            {
+                LabeledField("Lower Lim", 95.0f);
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderAngle("##hj_low", &hj.LowerAngleLimit, -180.0f, 180.0f);
+
+                LabeledField("Upper Lim", 95.0f);
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderAngle("##hj_high", &hj.UpperAngleLimit, -180.0f, 180.0f);
+            }
+
+            LabeledField("Motor", 95.0f);
+            ImGui::Checkbox("##hj_motor", &hj.EnableMotor);
+            if (hj.EnableMotor)
+            {
+                LabeledField("Motor Spd", 95.0f);
+                ImGui::SetNextItemWidth(-1);
+                ImGui::DragFloat("##hj_mspd", &hj.MotorSpeed, 0.1f, -50.0f, 50.0f);
+
+                LabeledField("Max Torque", 95.0f);
+                ImGui::SetNextItemWidth(-1);
+                ImGui::DragFloat("##hj_mtorq", &hj.MaxMotorTorque, 0.5f, 0.0f, 1000.0f);
+            }
+            ImGui::Spacing();
+        }
+
+        void DrawFixedJointComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<FixedJointComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Fixed Joint", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<FixedJointComponent>(ent); return; }
+
+            auto& fj = m_scene->GetComponent<FixedJointComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Target", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            DrawTargetEntitySelector("##fj_target", ent, fj.TargetEntity);
+
+            LabeledField("Offset", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##fj_off", &fj.RelativeOffset.x, 0.05f);
+
+            LabeledField("Rel Rot", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##fj_rot", &fj.RelativeRotation.x, 0.05f);
+
+            LabeledField("Break Force", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##fj_bf", &fj.BreakForce, 0.5f, 0.0f, 10000.0f);
+
+            LabeledField("Broken", 95.0f);
+            ImGui::Checkbox("##fj_brk", &fj.IsBroken);
+            ImGui::Spacing();
+        }
+
+        void DrawAudioSourceComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<AudioSourceComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Audio Source", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<AudioSourceComponent>(ent); return; }
+
+            auto& as = m_scene->GetComponent<AudioSourceComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Sound Path", 95.0f);
+            char pathBuf[256]{};
+            std::strncpy(pathBuf, as.SoundPath.c_str(), sizeof(pathBuf) - 1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##as_path", pathBuf, sizeof(pathBuf)))
+            {
+                as.SoundPath = pathBuf;
+            }
+
+            LabeledField("Volume", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##as_vol", &as.Volume, 0.0f, 2.0f);
+
+            LabeledField("Pitch", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##as_pitch", &as.Pitch, 0.1f, 3.0f);
+
+            LabeledField("Min Dist", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##as_min", &as.MinDistance, 0.1f, 0.01f, 1000.0f);
+
+            LabeledField("Max Dist", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##as_max", &as.MaxDistance, 0.5f, 0.1f, 5000.0f);
+
+            LabeledField("Is 3D", 95.0f);
+            ImGui::Checkbox("##as_3d", &as.Is3D);
+
+            LabeledField("Loop", 95.0f);
+            ImGui::Checkbox("##as_loop", &as.Loop);
+
+            LabeledField("Play Start", 95.0f);
+            ImGui::Checkbox("##as_pos", &as.PlayOnStart);
+            ImGui::Spacing();
+        }
+
+        void DrawAudioListenerComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<AudioListenerComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Audio Listener", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<AudioListenerComponent>(ent); return; }
+
+            auto& al = m_scene->GetComponent<AudioListenerComponent>(ent);
+            ImGui::Spacing();
+            LabeledField("Active", 95.0f);
+            ImGui::Checkbox("##al_active", &al.IsActive);
             ImGui::Spacing();
         }
 

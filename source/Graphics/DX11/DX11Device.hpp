@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 #include <DirectXMath.h>
 
+#include <span>
 #include <string>
 #include <string_view>
 #include <expected>
@@ -19,6 +20,25 @@ namespace RL
 {
     using Microsoft::WRL::ComPtr;
     class Scene;
+    struct MeshComponent;
+    struct MeshVertex;
+
+    struct DX11Vertex
+    {
+        float p[3];
+        float n[3];
+        float uv[2];
+        float c[4];
+        float t[4];
+    };
+
+    struct DX11MeshBuffers
+    {
+        ComPtr<ID3D11Buffer> vb;
+        ComPtr<ID3D11Buffer> ib;
+        u32 indexCount = 0;
+        bool isLineList = false;
+    };
 
     class DX11CommandBuffer final : public RHI::IRHICommandBuffer
     {
@@ -62,6 +82,7 @@ namespace RL
         void Resize(u32 width, u32 height) override;
         void BeginFrame() override;
         void ClearRenderTarget(f32 r = 0.04f, f32 g = 0.06f, f32 b = 0.09f, f32 a = 1.0f) override;
+        void ClearRenderTarget(const DirectX::XMFLOAT4& color);
         void EndFrame() override;
         void Present(bool vsync = true) override;
         void WaitForGPU() override;
@@ -72,6 +93,9 @@ namespace RL
 
         void SetShowGrid(bool show) noexcept { m_showGrid = show; }
         [[nodiscard]] bool IsGridVisible() const noexcept { return m_showGrid; }
+
+        [[nodiscard]] bool HasCachedMesh(std::string_view key) const;
+        [[nodiscard]] u32 GetCachedMeshIndexCount(std::string_view key) const;
 
         [[nodiscard]] const RHI::GpuDeviceInfo& GetGpuInfo() const noexcept override { return m_gpuInfo; }
         [[nodiscard]] void* GetNativeDevice() const noexcept override { return m_device.Get(); }
@@ -97,17 +121,31 @@ namespace RL
         std::expected<void, std::string> CreateShadowResources();
         std::expected<void, std::string> CreateDefaultTextureAndSampler();
         std::expected<void, std::string> InitBasicShaders();
+        std::expected<void, std::string> InitProceduralMeshes();
+        const DX11MeshBuffers* UploadMeshData(
+            std::string_view key,
+            std::span<const DX11Vertex> vertices,
+            std::span<const u32> indices,
+            bool isLineList = false);
+        const DX11MeshBuffers* UploadCpuMeshVertices(
+            std::string_view key,
+            std::span<const MeshVertex> vertices,
+            std::span<const u32> indices,
+            bool isLineList = false);
+        const DX11MeshBuffers* GetOrCreateMesh(const MeshComponent& mc);
         ID3D11ShaderResourceView* GetOrCreateTexture(const std::string& path);
 
     private:
-        ComPtr<ID3D11Device>           m_device;
-        ComPtr<ID3D11DeviceContext>    m_context;
-        ComPtr<IDXGISwapChain>         m_swapChain;
-        ComPtr<ID3D11RenderTargetView> m_rtv;
-        ComPtr<ID3D11Texture2D>        m_depthBuffer;
-        ComPtr<ID3D11DepthStencilView> m_dsv;
+        ComPtr<ID3D11Device>            m_device;
+        ComPtr<ID3D11DeviceContext>     m_context;
+        ComPtr<IDXGISwapChain>          m_swapChain;
+        ComPtr<ID3D11RenderTargetView>  m_rtv;
+        ComPtr<ID3D11Texture2D>         m_depthBuffer;
+        ComPtr<ID3D11DepthStencilView>  m_dsv;
         ComPtr<ID3D11DepthStencilState> m_depthState;
-        ComPtr<ID3D11RasterizerState>  m_rasterState;
+        ComPtr<ID3D11RasterizerState>   m_rasterState;
+        ComPtr<ID3D11RasterizerState>   m_wireframeRasterState;
+        ComPtr<ID3D11BlendState>        m_alphaBlendState;
 
         ComPtr<ID3D11VertexShader>     m_vs;
         ComPtr<ID3D11PixelShader>      m_ps;
@@ -115,6 +153,7 @@ namespace RL
         ComPtr<ID3D11Buffer>           m_constantBuffer;
         ComPtr<ID3D11Buffer>           m_cubeVertexBuffer;
         ComPtr<ID3D11Buffer>           m_cubeIndexBuffer;
+        std::unordered_map<std::string, DX11MeshBuffers> m_meshCache;
 
         ComPtr<ID3D11VertexShader>       m_shadowVS;
         ComPtr<ID3D11Texture2D>          m_shadowTexture;

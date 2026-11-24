@@ -32,9 +32,20 @@ namespace RL
         DirectX::XMFLOAT4   CascadeSplits{ 10.0f, 25.0f, 60.0f, 150.0f };
         DirectX::XMFLOAT4   CascadeSrvIndices{ 0.0f, 0.0f, 0.0f, 0.0f };
         DirectX::XMFLOAT4   CascadeParams{ 2048.0f, 0.0012f, 4.0f, 1.0f };
-        u8                  Padding[1024 - (sizeof(DirectX::XMFLOAT4X4) * 8 + sizeof(DirectX::XMFLOAT4) * 13)];
+        DirectX::XMFLOAT4   FogColorDensity{ 0.15f, 0.18f, 0.24f, 0.02f };
+        DirectX::XMFLOAT4   EnvParams{ 0.0f, 1.0f, 3.0f, 0.0f };
+        u8                  Padding[1024 - (sizeof(DirectX::XMFLOAT4X4) * 8 + sizeof(DirectX::XMFLOAT4) * 15)];
     };
     static_assert(sizeof(ObjectConstants) == 1024, "ObjectConstants must be exactly 1024 bytes aligned");
+
+    struct alignas(16) DynamicLightData
+    {
+        DirectX::XMFLOAT4 PositionRange{ 0.0f, 0.0f, 0.0f, 10.0f };
+        DirectX::XMFLOAT4 ColorIntensity{ 1.0f, 1.0f, 1.0f, 1.0f };
+        DirectX::XMFLOAT4 DirectionType{ 0.0f, -1.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT4 SpotParams{ 0.0f, 0.0f, 0.0f, 0.0f };
+    };
+    static_assert(sizeof(DynamicLightData) == 64, "DynamicLightData must be exactly 64 bytes");
 
     struct alignas(256) FrameConstants
     {

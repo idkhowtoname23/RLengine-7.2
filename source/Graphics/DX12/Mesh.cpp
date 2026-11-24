@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <numbers>
+#include <algorithm>
 
 namespace RL
 {
@@ -35,6 +36,22 @@ namespace RL
         mesh->m_name = std::string(name);
         mesh->m_vertexCount = static_cast<u32>(vertices.size());
         mesh->m_indexCount = static_cast<u32>(indices.size());
+        mesh->m_cpuVertices.assign(vertices.begin(), vertices.end());
+        mesh->m_cpuIndices.assign(indices.begin(), indices.end());
+
+        DirectX::XMFLOAT3 bMin = vertices[0].Position;
+        DirectX::XMFLOAT3 bMax = vertices[0].Position;
+        for (const auto& v : vertices)
+        {
+            bMin.x = (std::min)(bMin.x, v.Position.x);
+            bMin.y = (std::min)(bMin.y, v.Position.y);
+            bMin.z = (std::min)(bMin.z, v.Position.z);
+            bMax.x = (std::max)(bMax.x, v.Position.x);
+            bMax.y = (std::max)(bMax.y, v.Position.y);
+            bMax.z = (std::max)(bMax.z, v.Position.z);
+        }
+        mesh->m_boundsMin = bMin;
+        mesh->m_boundsMax = bMax;
 
         auto vbRes = mesh->m_vertexBuffer.Initialize(
             device,

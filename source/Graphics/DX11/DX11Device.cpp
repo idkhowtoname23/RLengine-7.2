@@ -1,5 +1,7 @@
 #include "Graphics/DX11/DX11Device.hpp"
+#include "Graphics/DX12/Mesh.hpp"
 #include "Graphics/RHI/GpuCapabilities.hpp"
+#include "Assets/AssetImporters.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/Components.hpp"
 #include "Platform/FileSystem/VFS.hpp"
@@ -8,21 +10,15 @@
 
 #include <d3dcompiler.h>
 #include <stb_image.h>
-#include <format>
-#include <filesystem>
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <filesystem>
+#include <format>
+#include <vector>
 
 namespace RL
 {
-    struct DX11Vertex
-    {
-        float p[3];
-        float n[3];
-        float uv[2];
-        float c[4];
-        float t[4];
-    };
-
     struct CBLayout
     {
         DirectX::XMFLOAT4X4 WorldViewProj;
@@ -32,7 +28,49 @@ namespace RL
         DirectX::XMFLOAT4 LightDir;
         DirectX::XMFLOAT4 LightColor;
         DirectX::XMFLOAT4 AmbientColor;
+        DirectX::XMFLOAT4 CameraPos;
+        DirectX::XMFLOAT4 FogParams;
+        DirectX::XMFLOAT4 PointLightPos;
+        DirectX::XMFLOAT4 PointLightColor;
+        DirectX::XMFLOAT4 SpotLightPos;
+        DirectX::XMFLOAT4 SpotLightDir;
+        DirectX::XMFLOAT4 SpotLightColor;
+        DirectX::XMFLOAT4 MaterialParams;
     };
+
+    namespace
+    {
+        [[nodiscard]] std::vector<DX11Vertex> ConvertMeshVertices(std::span<const MeshVertex> src)
+        {
+            std::vector<DX11Vertex> dst;
+            dst.reserve(src.size());
+            for (const auto& v : src)
+            {
+                dst.push_back(DX11Vertex{
+                    { v.Position.x, v.Position.y, v.Position.z },
+                    { v.Normal.x, v.Normal.y, v.Normal.z },
+                    { v.UV.x, v.UV.y },
+                    { v.Color.x, v.Color.y, v.Color.z, v.Color.w },
+                    { v.Tangent.x, v.Tangent.y, v.Tangent.z, v.Tangent.w }
+                });
+            }
+            return dst;
+        }
+
+        [[nodiscard]] std::string CanonicalPrimitiveName(std::string_view name)
+        {
+            std::string lower(name);
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (lower == "cube") return "Cube";
+            if (lower == "sphere") return "Sphere";
+            if (lower == "plane") return "Plane";
+            if (lower == "grid") return "Grid";
+            if (lower == "quad") return "Quad";
+            return std::string(name);
+        }
+    }
 
     void DX11CommandBuffer::SetViewport(f32 x, f32 y, f32 width, f32 height)
     {
@@ -135,6 +173,12 @@ namespace RL
             RL_LOG_WARN("DX11 basic shaders initialization warning: {}", shaderRes.error());
         }
 
+        auto meshRes = InitProceduralMeshes();
+        if (!meshRes)
+        {
+            RL_LOG_WARN("DX11 procedural mesh cache initialization warning: {}", meshRes.error());
+        }
+
         RL_LOG_INFO("DirectX 11 subsystem initialized successfully on '{}' [Feature Level 11_0+, VRAM: {:.2f} GB]",
                     m_gpuDescription,
                     static_cast<f64>(m_dedicatedVramBytes) / (1024.0 * 1024.0 * 1024.0));
@@ -148,6 +192,7 @@ namespace RL
             m_context->ClearState();
         }
 
+        m_meshCache.clear();
         m_textureCache.clear();
         m_fallbackSRV.Reset();
         m_fallbackTexture.Reset();
@@ -174,6 +219,8 @@ namespace RL
         m_ps.Reset();
         m_vs.Reset();
 
+        m_alphaBlendState.Reset();
+        m_wireframeRasterState.Reset();
         m_rasterState.Reset();
         m_depthState.Reset();
         m_dsv.Reset();
@@ -254,6 +301,11 @@ namespace RL
         }
     }
 
+    void DX11Device::ClearRenderTarget(const DirectX::XMFLOAT4& color)
+    {
+        ClearRenderTarget(color.x, color.y, color.z, color.w);
+    }
+
     void DX11Device::EndFrame()
     {
     }
@@ -270,6 +322,17 @@ namespace RL
         {
             m_context->Flush();
         }
+    }
+
+    bool DX11Device::HasCachedMesh(std::string_view key) const
+    {
+        return m_meshCache.find(std::string(key)) != m_meshCache.end();
+    }
+
+    u32 DX11Device::GetCachedMeshIndexCount(std::string_view key) const
+    {
+        const auto it = m_meshCache.find(std::string(key));
+        return (it != m_meshCache.end()) ? it->second.indexCount : 0u;
     }
 
     std::expected<void, std::string> DX11Device::CreateDeviceAndSwapChain(HWND hwnd, u32 width, u32 height)
@@ -424,6 +487,34 @@ namespace RL
             return std::unexpected(std::format("Failed to create DX11 RasterizerState: 0x{:08X}", static_cast<u32>(hr)));
         }
 
+        D3D11_RASTERIZER_DESC wireDesc{};
+        wireDesc.FillMode = D3D11_FILL_WIREFRAME;
+        wireDesc.CullMode = D3D11_CULL_NONE;
+        wireDesc.FrontCounterClockwise = FALSE;
+        wireDesc.DepthClipEnable = TRUE;
+
+        hr = m_device->CreateRasterizerState(&wireDesc, &m_wireframeRasterState);
+        if (FAILED(hr))
+        {
+            return std::unexpected(std::format("Failed to create DX11 Wireframe RasterizerState: 0x{:08X}", static_cast<u32>(hr)));
+        }
+
+        D3D11_BLEND_DESC blendDesc{};
+        blendDesc.RenderTarget[0].BlendEnable = TRUE;
+        blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+        hr = m_device->CreateBlendState(&blendDesc, &m_alphaBlendState);
+        if (FAILED(hr))
+        {
+            return std::unexpected(std::format("Failed to create DX11 Alpha BlendState: 0x{:08X}", static_cast<u32>(hr)));
+        }
+
         return {};
     }
 
@@ -566,10 +657,13 @@ namespace RL
         }
 
         std::filesystem::path resolvedPath = path;
-        auto vfsResolved = VFS::Resolve(path);
-        if (vfsResolved && std::filesystem::exists(*vfsResolved))
+        if (auto vfsResolved = VFS::Resolve(path); vfsResolved && std::filesystem::exists(*vfsResolved))
         {
             resolvedPath = *vfsResolved;
+        }
+        else if (auto assetsResolved = VFS::Resolve("assets://" + path); assetsResolved && std::filesystem::exists(*assetsResolved))
+        {
+            resolvedPath = *assetsResolved;
         }
         else if (!std::filesystem::exists(resolvedPath))
         {
@@ -621,6 +715,175 @@ namespace RL
         return result;
     }
 
+    const DX11MeshBuffers* DX11Device::UploadMeshData(
+        std::string_view key,
+        std::span<const DX11Vertex> vertices,
+        std::span<const u32> indices,
+        bool isLineList)
+    {
+        if (!m_device || vertices.empty())
+        {
+            return nullptr;
+        }
+
+        std::vector<u32> generatedIndices;
+        if (indices.empty())
+        {
+            generatedIndices.resize(vertices.size());
+            for (usize i = 0; i < vertices.size(); ++i)
+            {
+                generatedIndices[i] = static_cast<u32>(i);
+            }
+            indices = generatedIndices;
+        }
+
+        DX11MeshBuffers buffers{};
+        buffers.indexCount = static_cast<u32>(indices.size());
+        buffers.isLineList = isLineList;
+
+        D3D11_BUFFER_DESC vbDesc{};
+        vbDesc.ByteWidth = static_cast<UINT>(vertices.size_bytes());
+        vbDesc.Usage = D3D11_USAGE_IMMUTABLE;
+        vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA vbInit{ vertices.data(), 0, 0 };
+        if (FAILED(m_device->CreateBuffer(&vbDesc, &vbInit, &buffers.vb)))
+        {
+            return nullptr;
+        }
+
+        D3D11_BUFFER_DESC ibDesc{};
+        ibDesc.ByteWidth = static_cast<UINT>(indices.size_bytes());
+        ibDesc.Usage = D3D11_USAGE_IMMUTABLE;
+        ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA ibInit{ indices.data(), 0, 0 };
+        if (FAILED(m_device->CreateBuffer(&ibDesc, &ibInit, &buffers.ib)))
+        {
+            return nullptr;
+        }
+
+        const std::string keyStr(key);
+        auto [it, inserted] = m_meshCache.insert_or_assign(keyStr, std::move(buffers));
+        return &it->second;
+    }
+
+    const DX11MeshBuffers* DX11Device::UploadCpuMeshVertices(
+        std::string_view key,
+        std::span<const MeshVertex> vertices,
+        std::span<const u32> indices,
+        bool isLineList)
+    {
+        if (vertices.empty())
+        {
+            return nullptr;
+        }
+        const auto dx11Verts = ConvertMeshVertices(vertices);
+        return UploadMeshData(key, dx11Verts, indices, isLineList);
+    }
+
+    std::expected<void, std::string> DX11Device::InitProceduralMeshes()
+    {
+        const char* primitiveNames[] = { "Cube", "Sphere", "Plane", "Grid", "Quad" };
+        for (const char* name : primitiveNames)
+        {
+            std::vector<MeshVertex> verts;
+            std::vector<u32> indices;
+            Detail::BuildPrimitiveVertices(name, verts, indices);
+            const bool isLine = (std::string_view(name) == "Grid");
+            if (!UploadCpuMeshVertices(name, verts, indices, isLine))
+            {
+                return std::unexpected(std::format("Failed to upload DX11 procedural mesh '{}'", name));
+            }
+        }
+        return {};
+    }
+
+    const DX11MeshBuffers* DX11Device::GetOrCreateMesh(const MeshComponent& mc)
+    {
+        if (mc.MeshRef && !mc.MeshRef->GetCpuVertices().empty())
+        {
+            std::string cacheKey;
+            if (!mc.ModelPath.empty())
+            {
+                cacheKey = mc.ModelPath;
+            }
+            else if (!mc.MeshRef->GetName().empty() && mc.MeshRef->GetName() != "Mesh")
+            {
+                cacheKey = std::string(mc.MeshRef->GetName());
+            }
+            else if (!mc.MeshName.empty())
+            {
+                const std::string canonical = CanonicalPrimitiveName(mc.MeshName);
+                if (canonical != "Cube" && canonical != "Sphere" && canonical != "Plane" && canonical != "Grid" && canonical != "Quad")
+                {
+                    cacheKey = mc.MeshName;
+                }
+                else
+                {
+                    cacheKey = std::format("MeshPtr_{:x}", reinterpret_cast<uintptr_t>(mc.MeshRef.get()));
+                }
+            }
+            else
+            {
+                cacheKey = std::format("MeshPtr_{:x}", reinterpret_cast<uintptr_t>(mc.MeshRef.get()));
+            }
+
+            if (const auto it = m_meshCache.find(cacheKey); it != m_meshCache.end())
+            {
+                return &it->second;
+            }
+
+            const bool isLine = (CanonicalPrimitiveName(mc.MeshName) == "Grid" || mc.MeshRef->GetName() == "Grid");
+            if (const auto* uploaded = UploadCpuMeshVertices(
+                    cacheKey,
+                    mc.MeshRef->GetCpuVertices(),
+                    mc.MeshRef->GetCpuIndices(),
+                    isLine))
+            {
+                return uploaded;
+            }
+        }
+
+        if (!mc.ModelPath.empty())
+        {
+            if (const auto it = m_meshCache.find(mc.ModelPath); it != m_meshCache.end())
+            {
+                return &it->second;
+            }
+
+            std::filesystem::path resolvedPath = mc.ModelPath;
+            if (const auto vfsResolved = VFS::Resolve(mc.ModelPath); vfsResolved && std::filesystem::exists(*vfsResolved))
+            {
+                resolvedPath = *vfsResolved;
+            }
+            else if (const auto assetsResolved = VFS::Resolve("assets://" + mc.ModelPath); assetsResolved && std::filesystem::exists(*assetsResolved))
+            {
+                resolvedPath = *assetsResolved;
+            }
+
+            MeshAsset loadedMesh;
+            if (MeshAssetImporter::LoadCpuMesh(resolvedPath, loadedMesh) && !loadedMesh.vertices.empty())
+            {
+                if (const auto* uploaded = UploadCpuMeshVertices(mc.ModelPath, loadedMesh.vertices, loadedMesh.indices, false))
+                {
+                    return uploaded;
+                }
+            }
+        }
+
+        const std::string canonicalName = CanonicalPrimitiveName(mc.MeshName);
+        if (const auto it = m_meshCache.find(canonicalName); it != m_meshCache.end())
+        {
+            return &it->second;
+        }
+
+        if (const auto it = m_meshCache.find("Cube"); it != m_meshCache.end())
+        {
+            return &it->second;
+        }
+
+        return nullptr;
+    }
+
     std::expected<void, std::string> DX11Device::InitBasicShaders()
     {
         const char* shaderSource = R"(
@@ -633,6 +896,14 @@ namespace RL
                 float4 LightDir;
                 float4 LightColor;
                 float4 AmbientColor;
+                float4 CameraPos;
+                float4 FogParams;
+                float4 PointLightPos;
+                float4 PointLightColor;
+                float4 SpotLightPos;
+                float4 SpotLightDir;
+                float4 SpotLightColor;
+                float4 MaterialParams;
             };
 
             Texture2D diffuseTexture : register(t0);
@@ -658,18 +929,20 @@ namespace RL
                 float4 Tangent : TANGENT;
                 float2 UV : TEXCOORD0;
                 float4 LightSpacePos : TEXCOORD1;
+                float3 WorldPos : TEXCOORD2;
             };
 
             PSIn VSMain(VSIn input)
             {
                 PSIn output;
+                float4 worldPos = mul(float4(input.Pos, 1.0f), World);
                 output.Pos = mul(float4(input.Pos, 1.0f), WorldViewProj);
                 output.Color = input.Color * ObjectColor;
                 output.Normal = mul(input.Normal, (float3x3)World);
                 output.Tangent = float4(mul(input.Tangent.xyz, (float3x3)World), input.Tangent.w);
                 output.UV = input.UV;
-                float4 worldPos = mul(float4(input.Pos, 1.0f), World);
                 output.LightSpacePos = mul(worldPos, LightViewProj);
+                output.WorldPos = worldPos.xyz;
                 return output;
             }
 
@@ -681,7 +954,7 @@ namespace RL
 
             float CalculateShadow(float4 lightSpacePos)
             {
-                float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
+                float3 projCoords = lightSpacePos.xyz / max(lightSpacePos.w, 0.0001f);
                 projCoords.x = projCoords.x * 0.5f + 0.5f;
                 projCoords.y = -projCoords.y * 0.5f + 0.5f;
 
@@ -709,22 +982,83 @@ namespace RL
 
             float4 PSMain(PSIn input) : SV_Target
             {
-                float3 N = normalize(input.Normal);
-                float3 T = normalize(input.Tangent.xyz);
-                T = normalize(T - dot(T, N) * N);
-                float3 B = cross(N, T) * input.Tangent.w;
-                float3x3 TBN = float3x3(T, B, N);
+                float4 texColor = diffuseTexture.Sample(linearSampler, input.UV);
 
-                float3 normalSample = normalMap.Sample(linearSampler, input.UV).xyz * 2.0f - 1.0f;
-                N = normalize(mul(normalSample, TBN));
+                if (MaterialParams.w > 0.5f)
+                {
+                    float4 unlitColor = texColor * input.Color;
+                    if (FogParams.w > 0.0f)
+                    {
+                        float viewDist = length(CameraPos.xyz - input.WorldPos);
+                        float fogFactor = saturate(1.0f - exp(-FogParams.w * viewDist));
+                        unlitColor.rgb = lerp(unlitColor.rgb, FogParams.rgb, fogFactor);
+                    }
+                    return unlitColor;
+                }
+
+                float nLenSq = dot(input.Normal, input.Normal);
+                float3 N = (nLenSq > 1e-6f) ? (input.Normal * rsqrt(nLenSq)) : float3(0.0f, 1.0f, 0.0f);
+
+                float3 T = input.Tangent.xyz - dot(input.Tangent.xyz, N) * N;
+                float tLenSq = dot(T, T);
+                if (tLenSq > 1e-5f)
+                {
+                    T = T * rsqrt(tLenSq);
+                    float3 B = cross(N, T) * (input.Tangent.w == 0.0f ? 1.0f : input.Tangent.w);
+                    float3x3 TBN = float3x3(T, B, N);
+                    float3 normalSample = normalMap.Sample(linearSampler, input.UV).xyz * 2.0f - 1.0f;
+                    float3 perturbedN = mul(normalSample, TBN);
+                    float pnLenSq = dot(perturbedN, perturbedN);
+                    if (pnLenSq > 1e-6f)
+                    {
+                        N = perturbedN * rsqrt(pnLenSq);
+                    }
+                }
 
                 float3 L = normalize(-LightDir.xyz);
                 float NdotL = max(dot(N, L), 0.0f);
                 float shadowFactor = CalculateShadow(input.LightSpacePos);
-                float3 lit = AmbientColor.rgb + LightColor.rgb * NdotL * shadowFactor;
-                float4 texColor = diffuseTexture.Sample(linearSampler, input.UV);
-                lit = lit * input.Color.rgb * texColor.rgb;
-                return float4(lit, input.Color.a * texColor.a);
+                float ao = saturate(MaterialParams.z);
+                float3 lit = AmbientColor.rgb * ao + LightColor.rgb * NdotL * shadowFactor;
+
+                if (PointLightPos.w > 0.0f)
+                {
+                    float3 toPoint = PointLightPos.xyz - input.WorldPos;
+                    float dist = length(toPoint);
+                    if (dist < PointLightPos.w)
+                    {
+                        float3 L_pt = toPoint / max(dist, 0.0001f);
+                        float NdotL_pt = max(dot(N, L_pt), 0.0f);
+                        float att = pow(saturate(1.0f - (dist / PointLightPos.w)), 2.0f) / (1.0f + 0.1f * dist * dist);
+                        lit += PointLightColor.rgb * NdotL_pt * att;
+                    }
+                }
+
+                if (SpotLightPos.w > 0.0f)
+                {
+                    float3 toSpot = SpotLightPos.xyz - input.WorldPos;
+                    float sDist = length(toSpot);
+                    if (sDist < SpotLightPos.w)
+                    {
+                        float3 L_spot = toSpot / max(sDist, 0.0001f);
+                        float theta = dot(-L_spot, normalize(SpotLightDir.xyz));
+                        float outerCos = SpotLightDir.w;
+                        float innerCos = SpotLightColor.w;
+                        float spotFactor = saturate((theta - outerCos) / max(innerCos - outerCos, 0.001f));
+                        float sAtt = pow(saturate(1.0f - (sDist / SpotLightPos.w)), 2.0f) / (1.0f + 0.1f * sDist * sDist);
+                        float NdotL_spot = max(dot(N, L_spot), 0.0f);
+                        lit += SpotLightColor.rgb * NdotL_spot * sAtt * spotFactor;
+                    }
+                }
+
+                float3 finalRgb = lit * input.Color.rgb * texColor.rgb;
+                if (FogParams.w > 0.0f)
+                {
+                    float viewDist = length(CameraPos.xyz - input.WorldPos);
+                    float fogFactor = saturate(1.0f - exp(-FogParams.w * viewDist));
+                    finalRgb = lerp(finalRgb, FogParams.rgb, fogFactor);
+                }
+                return float4(finalRgb, input.Color.a * texColor.a);
             }
 
             struct GridVSIn
@@ -952,15 +1286,42 @@ namespace RL
     {
         if (!m_context || !m_vs || !m_ps || !m_cubeVertexBuffer || !m_constantBuffer) return;
 
+        const WorldEnvironment& env = scene.GetEnvironment();
+        const bool sceneWireframe = (scene.GetShadingMode() == SceneShadingMode::Wireframe);
+
         DirectX::XMMATRIX viewProj = scene.GetCamera().GetViewProjectionMatrix();
+        const DirectX::XMFLOAT3& camPos3 = scene.GetCamera().GetPosition();
+        const DirectX::XMFLOAT4 cameraPos{ camPos3.x, camPos3.y, camPos3.z, 1.0f };
 
         const auto* transformPool = scene.GetPool<TransformComponent>();
         const auto* meshPool = scene.GetPool<MeshComponent>();
+        const auto* quadPool = scene.GetPool<QuadRenderComponent>();
         if (!transformPool) return;
 
         DirectX::XMFLOAT4 lightDir{ 0.5f, -0.8f, 0.7f, 0.0f };
         DirectX::XMFLOAT4 lightColor{ 1.0f, 1.0f, 1.0f, 1.0f };
-        DirectX::XMFLOAT4 ambientColor{ 0.15f, 0.18f, 0.22f, 1.0f };
+        const DirectX::XMFLOAT4 ambientColor{
+            0.15f * env.AmbientStrength,
+            0.18f * env.AmbientStrength,
+            0.22f * env.AmbientStrength,
+            env.AmbientStrength
+        };
+        const DirectX::XMFLOAT4 fogParams{
+            env.FogColor.x,
+            env.FogColor.y,
+            env.FogColor.z,
+            env.FogEnabled ? env.FogDensity : 0.0f
+        };
+
+        DirectX::XMFLOAT4 pointLightPos{ 0.0f, 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT4 pointLightColor{ 0.0f, 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT4 spotLightPos{ 0.0f, 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT4 spotLightDir{ 0.0f, -1.0f, 0.0f, 0.9f };
+        DirectX::XMFLOAT4 spotLightColor{ 0.0f, 0.0f, 0.0f, 0.95f };
+
+        bool foundDir = false;
+        bool foundPoint = false;
+        bool foundSpot = false;
 
         const auto* lightPool = scene.GetPool<LightComponent>();
         if (lightPool)
@@ -969,21 +1330,54 @@ namespace RL
             const auto lights = lightPool->GetData();
             for (usize i = 0; i < lights.size(); ++i)
             {
-                if (lights[i].Type == LightType::Directional)
+                const auto* tr = transformPool->TryGet(lightEntities[i]);
+                if (lights[i].Type == LightType::Directional && !foundDir)
                 {
-                    const auto* tr = transformPool->TryGet(lightEntities[i]);
-                    if (tr)
+                    if (tr && (tr->Position.x != 0.0f || tr->Position.y != 0.0f || tr->Position.z != 0.0f))
                     {
-                        if (tr->Position.x != 0.0f || tr->Position.y != 0.0f || tr->Position.z != 0.0f)
-                        {
-                            lightDir = { tr->Position.x, tr->Position.y, tr->Position.z, 0.0f };
-                        }
+                        lightDir = { tr->Position.x, tr->Position.y, tr->Position.z, 0.0f };
                     }
-                    lightColor = { lights[i].Color.x * lights[i].Intensity,
-                                   lights[i].Color.y * lights[i].Intensity,
-                                   lights[i].Color.z * lights[i].Intensity,
-                                   1.0f };
-                    break;
+                    lightColor = {
+                        lights[i].Color.x * lights[i].Intensity,
+                        lights[i].Color.y * lights[i].Intensity,
+                        lights[i].Color.z * lights[i].Intensity,
+                        1.0f
+                    };
+                    foundDir = true;
+                }
+                else if (lights[i].Type == LightType::Point && !foundPoint && tr)
+                {
+                    const f32 range = (lights[i].Range > 0.0f) ? lights[i].Range : 10.0f;
+                    pointLightPos = { tr->Position.x, tr->Position.y, tr->Position.z, range };
+                    pointLightColor = {
+                        lights[i].Color.x * lights[i].Intensity,
+                        lights[i].Color.y * lights[i].Intensity,
+                        lights[i].Color.z * lights[i].Intensity,
+                        lights[i].Intensity
+                    };
+                    foundPoint = true;
+                }
+                else if (lights[i].Type == LightType::Spot && !foundSpot && tr)
+                {
+                    const f32 range = (lights[i].Range > 0.0f) ? lights[i].Range : 15.0f;
+                    const f32 clampedAngle = std::clamp(lights[i].SpotAngle, 1.0f, 179.0f);
+                    const f32 outerCos = std::cos(DirectX::XMConvertToRadians(clampedAngle * 0.5f));
+                    const f32 innerCos = std::cos(DirectX::XMConvertToRadians(clampedAngle * 0.35f));
+
+                    const auto rotMat = DirectX::XMMatrixRotationRollPitchYaw(tr->Rotation.x, tr->Rotation.y, tr->Rotation.z);
+                    DirectX::XMFLOAT3 dir3;
+                    DirectX::XMStoreFloat3(&dir3, DirectX::XMVector3Normalize(
+                        DirectX::XMVector3TransformNormal(DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rotMat)));
+
+                    spotLightPos = { tr->Position.x, tr->Position.y, tr->Position.z, range };
+                    spotLightDir = { dir3.x, dir3.y, dir3.z, outerCos };
+                    spotLightColor = {
+                        lights[i].Color.x * lights[i].Intensity,
+                        lights[i].Color.y * lights[i].Intensity,
+                        lights[i].Color.z * lights[i].Intensity,
+                        innerCos
+                    };
+                    foundSpot = true;
                 }
             }
         }
@@ -999,6 +1393,28 @@ namespace RL
         DirectX::XMMATRIX lightView = DirectX::XMMatrixLookAtLH(lightEye, lightAt, lightUp);
         DirectX::XMMATRIX lightProj = DirectX::XMMatrixOrthographicLH(40.0f, 40.0f, 1.0f, 100.0f);
         DirectX::XMMATRIX lightViewProj = DirectX::XMMatrixMultiply(lightView, lightProj);
+
+        auto writeCommonCB = [&](CBLayout* cb,
+                                 const DirectX::XMMATRIX& wvp,
+                                 const DirectX::XMMATRIX& world,
+                                 const DirectX::XMFLOAT4& objectColor,
+                                 const DirectX::XMFLOAT4& materialParams) {
+            DirectX::XMStoreFloat4x4(&cb->WorldViewProj, wvp);
+            DirectX::XMStoreFloat4x4(&cb->World, world);
+            DirectX::XMStoreFloat4x4(&cb->LightViewProj, lightViewProj);
+            cb->ObjectColor = objectColor;
+            cb->LightDir = lightDir;
+            cb->LightColor = lightColor;
+            cb->AmbientColor = ambientColor;
+            cb->CameraPos = cameraPos;
+            cb->FogParams = fogParams;
+            cb->PointLightPos = pointLightPos;
+            cb->PointLightColor = pointLightColor;
+            cb->SpotLightPos = spotLightPos;
+            cb->SpotLightDir = spotLightDir;
+            cb->SpotLightColor = spotLightColor;
+            cb->MaterialParams = materialParams;
+        };
 
         if (m_shadowDSV && m_shadowVS && meshPool)
         {
@@ -1029,12 +1445,6 @@ namespace RL
             m_context->IASetInputLayout(m_inputLayout.Get());
             m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-            const UINT stride = sizeof(DX11Vertex);
-            const UINT offset = 0;
-            ID3D11Buffer* vbs[] = { m_cubeVertexBuffer.Get() };
-            m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
-            m_context->IASetIndexBuffer(m_cubeIndexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
-
             m_context->VSSetShader(m_shadowVS.Get(), nullptr, 0);
             m_context->PSSetShader(nullptr, nullptr, 0);
 
@@ -1043,34 +1453,47 @@ namespace RL
 
             const auto shadowEntities = meshPool->GetEntities();
             const auto shadowMeshes = meshPool->GetData();
+            const UINT stride = sizeof(DX11Vertex);
+            const UINT offset = 0;
+
             for (usize i = 0; i < shadowMeshes.size(); ++i)
             {
                 if (!shadowMeshes[i].IsVisible) continue;
                 Entity entity = scene.GetEntityFromIndex(shadowEntities[i]);
                 if (!scene.IsValid(entity)) continue;
 
+                const DX11MeshBuffers* meshBuf = GetOrCreateMesh(shadowMeshes[i]);
+                if (!meshBuf || !meshBuf->vb || !meshBuf->ib || meshBuf->indexCount == 0 || meshBuf->isLineList)
+                {
+                    continue;
+                }
+
+                ID3D11Buffer* vbs[] = { meshBuf->vb.Get() };
+                m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
+                m_context->IASetIndexBuffer(meshBuf->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+
                 DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
 
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
                 {
-                    auto* cb = static_cast<CBLayout*>(mapped.pData);
-                    DirectX::XMStoreFloat4x4(&cb->WorldViewProj, DirectX::XMMatrixMultiply(world, lightViewProj));
-                    DirectX::XMStoreFloat4x4(&cb->World, world);
-                    DirectX::XMStoreFloat4x4(&cb->LightViewProj, lightViewProj);
-                    cb->ObjectColor = shadowMeshes[i].Color;
-                    cb->LightDir = lightDir;
-                    cb->LightColor = lightColor;
-                    cb->AmbientColor = ambientColor;
+                    writeCommonCB(
+                        static_cast<CBLayout*>(mapped.pData),
+                        DirectX::XMMatrixMultiply(world, lightViewProj),
+                        world,
+                        shadowMeshes[i].Color,
+                        { 0.0f, 0.5f, 1.0f, 0.0f }
+                    );
                     m_context->Unmap(m_constantBuffer.Get(), 0);
                 }
 
-                m_context->DrawIndexed(36, 0, 0);
+                m_context->DrawIndexed(meshBuf->indexCount, 0, 0);
             }
         }
 
         ID3D11RenderTargetView* rtvs[] = { m_rtv.Get() };
         m_context->OMSetRenderTargets(1, rtvs, m_dsv.Get());
+        ClearRenderTarget(env.SkyColor);
         if (m_depthState)
         {
             m_context->OMSetDepthStencilState(m_depthState.Get(), 1);
@@ -1097,14 +1520,13 @@ namespace RL
             D3D11_MAPPED_SUBRESOURCE mapped{};
             if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
             {
-                auto* cb = static_cast<CBLayout*>(mapped.pData);
-                DirectX::XMStoreFloat4x4(&cb->WorldViewProj, gridWvp);
-                DirectX::XMStoreFloat4x4(&cb->World, identity);
-                DirectX::XMStoreFloat4x4(&cb->LightViewProj, lightViewProj);
-                cb->ObjectColor = DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f };
-                cb->LightDir = lightDir;
-                cb->LightColor = lightColor;
-                cb->AmbientColor = ambientColor;
+                writeCommonCB(
+                    static_cast<CBLayout*>(mapped.pData),
+                    gridWvp,
+                    identity,
+                    DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f },
+                    DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 0.0f }
+                );
                 m_context->Unmap(m_constantBuffer.Get(), 0);
             }
 
@@ -1128,14 +1550,6 @@ namespace RL
         }
 
         m_context->IASetInputLayout(m_inputLayout.Get());
-        m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-        const UINT stride = sizeof(DX11Vertex);
-        const UINT offset = 0;
-        ID3D11Buffer* vbs[] = { m_cubeVertexBuffer.Get() };
-        m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
-        m_context->IASetIndexBuffer(m_cubeIndexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
-
         m_context->VSSetShader(m_vs.Get(), nullptr, 0);
         m_context->PSSetShader(m_ps.Get(), nullptr, 0);
 
@@ -1152,6 +1566,9 @@ namespace RL
             m_context->PSSetShaderResources(1, 1, shadowSrvs);
         }
 
+        const UINT stride = sizeof(DX11Vertex);
+        const UINT offset = 0;
+
         if (meshPool)
         {
             const auto* materialPool = scene.GetPool<MaterialComponent>();
@@ -1164,13 +1581,44 @@ namespace RL
                 Entity entity = scene.GetEntityFromIndex(entities[i]);
                 if (!scene.IsValid(entity)) continue;
 
+                const DX11MeshBuffers* meshBuf = GetOrCreateMesh(meshes[i]);
+                if (!meshBuf || !meshBuf->vb || !meshBuf->ib || meshBuf->indexCount == 0)
+                {
+                    continue;
+                }
+
+                const bool useWireframe = sceneWireframe || meshes[i].Wireframe;
+                if (useWireframe && m_wireframeRasterState)
+                {
+                    m_context->RSSetState(m_wireframeRasterState.Get());
+                }
+                else if (m_rasterState)
+                {
+                    m_context->RSSetState(m_rasterState.Get());
+                }
+
+                m_context->IASetPrimitiveTopology(
+                    meshBuf->isLineList ? D3D11_PRIMITIVE_TOPOLOGY_LINELIST : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                ID3D11Buffer* vbs[] = { meshBuf->vb.Get() };
+                m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
+                m_context->IASetIndexBuffer(meshBuf->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+
                 std::string texPath = meshes[i].TexturePath;
-                std::string normPath = "";
+                std::string normPath;
+                DirectX::XMFLOAT4 objColor = meshes[i].Color;
+                DirectX::XMFLOAT4 matParams{ 0.0f, 0.5f, 1.0f, 0.0f };
+
                 if (materialPool)
                 {
                     const auto* mat = materialPool->TryGet(entities[i]);
                     if (mat)
                     {
+                        objColor.x *= mat->BaseColor.x * mat->AlbedoColor.x;
+                        objColor.y *= mat->BaseColor.y * mat->AlbedoColor.y;
+                        objColor.z *= mat->BaseColor.z * mat->AlbedoColor.z;
+                        objColor.w *= mat->BaseColor.w * mat->AlbedoColor.w;
+                        matParams = { mat->Metallic, mat->Roughness, mat->AO, 0.0f };
                         if (texPath.empty() && !mat->TexturePath.empty())
                         {
                             texPath = mat->TexturePath;
@@ -1201,19 +1649,82 @@ namespace RL
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
                 {
-                    auto* cb = static_cast<CBLayout*>(mapped.pData);
-                    DirectX::XMStoreFloat4x4(&cb->WorldViewProj, wvp);
-                    DirectX::XMStoreFloat4x4(&cb->World, world);
-                    DirectX::XMStoreFloat4x4(&cb->LightViewProj, lightViewProj);
-                    cb->ObjectColor = meshes[i].Color;
-                    cb->LightDir = lightDir;
-                    cb->LightColor = lightColor;
-                    cb->AmbientColor = ambientColor;
+                    writeCommonCB(static_cast<CBLayout*>(mapped.pData), wvp, world, objColor, matParams);
                     m_context->Unmap(m_constantBuffer.Get(), 0);
                 }
 
-                m_context->DrawIndexed(36, 0, 0);
+                m_context->DrawIndexed(meshBuf->indexCount, 0, 0);
             }
+        }
+
+        if (quadPool)
+        {
+            const auto quadIt = m_meshCache.find("Quad");
+            if (quadIt != m_meshCache.end() && quadIt->second.vb && quadIt->second.ib && quadIt->second.indexCount > 0)
+            {
+                const DX11MeshBuffers& quadBuf = quadIt->second;
+
+                if (sceneWireframe && m_wireframeRasterState)
+                {
+                    m_context->RSSetState(m_wireframeRasterState.Get());
+                }
+                else if (m_rasterState)
+                {
+                    m_context->RSSetState(m_rasterState.Get());
+                }
+
+                if (m_alphaBlendState)
+                {
+                    const float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                    m_context->OMSetBlendState(m_alphaBlendState.Get(), blendFactor, 0xFFFFFFFF);
+                }
+
+                m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                ID3D11Buffer* qVbs[] = { quadBuf.vb.Get() };
+                m_context->IASetVertexBuffers(0, 1, qVbs, &stride, &offset);
+                m_context->IASetIndexBuffer(quadBuf.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+
+                ID3D11ShaderResourceView* normSrv = m_fallbackNormalSRV.Get();
+                m_context->PSSetShaderResources(2, 1, &normSrv);
+
+                const auto quadEntities = quadPool->GetEntities();
+                const auto quads = quadPool->GetData();
+
+                for (usize i = 0; i < quads.size(); ++i)
+                {
+                    if (!quads[i].IsVisible) continue;
+                    Entity entity = scene.GetEntityFromIndex(quadEntities[i]);
+                    if (!scene.IsValid(entity)) continue;
+
+                    ID3D11ShaderResourceView* texSrv = GetOrCreateTexture(quads[i].TexturePath);
+                    m_context->PSSetShaderResources(0, 1, &texSrv);
+
+                    DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
+                    DirectX::XMMATRIX wvp = world * viewProj;
+
+                    D3D11_MAPPED_SUBRESOURCE mapped{};
+                    if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+                    {
+                        writeCommonCB(
+                            static_cast<CBLayout*>(mapped.pData),
+                            wvp,
+                            world,
+                            quads[i].Color,
+                            DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 1.0f }
+                        );
+                        m_context->Unmap(m_constantBuffer.Get(), 0);
+                    }
+
+                    m_context->DrawIndexed(quadBuf.indexCount, 0, 0);
+                }
+
+                m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+            }
+        }
+
+        if (m_rasterState)
+        {
+            m_context->RSSetState(m_rasterState.Get());
         }
 
         ID3D11ShaderResourceView* nullSRVs[3] = { nullptr, nullptr, nullptr };

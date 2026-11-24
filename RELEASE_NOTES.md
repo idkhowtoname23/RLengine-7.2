@@ -1,94 +1,57 @@
-# 🚀 RLengine 7.2 Alpha 2 — Pre-Release Notes
+# 🚀 RLengine 7.2 Alpha 3 — Pre-Release Notes
 
-RLengine 7.2 Alpha 2 marks the second major milestone in the 7.2 development series. Building directly upon the foundation of physical accuracy, material fidelity, and editor isolation established in Alpha 1, Alpha 2 introduces mechanical constraints and joint simulation, background non-blocking live shader hot-reloading, spatial 3D audio with an object-oriented Lua bridge, and full multi-layer glTF PBR material autoloading.
-
----
-
-## 🌟 Highlights & Major New Capabilities in Alpha 2
-
-### 1. ⚙️ Physics Constraints & Joints Solver
-* **DistanceJointComponent**:
-  * Constrains distance between two entities or between an entity and a fixed world anchor.
-  * Configurable stiffness and damping parameters with Baumgarte stabilization.
-  * `AutoDistance` auto-calibration: automatically locks current distance on initialization.
-  * Balanced mass-ratio correction: distributes displacement proportionally between dynamic bodies or applies 100% full correction against static/kinematic anchors.
-* **HingeJointComponent**:
-  * Enforces rotational movement constrained to a single 3D axis with anchor coincidence.
-  * Eliminates angular velocity components perpendicular to the hinge axis.
-  * Rotational limits: `LowerAngleLimit` and `UpperAngleLimit` bounds preventing over-rotation.
-  * Powered motor support: `MotorSpeed` and `MaxMotorTorque` for motorized levers, wheels, and machinery.
-* **FixedJointComponent**:
-  * Rigidly locks relative position and orientation between two bodies.
-  * Configurable `BreakForce`: calculates the cumulative impulse required to maintain the lock over $\Delta t$; if force exceeds `BreakForce`, the bond breaks (`IsBroken = true`) and fires a `PhysicsTriggerEvent` via the `EventBus`.
-
-### 2. 🔥 Live Background Shader Hot-Reloading
-* **Overlapped FileWatcher**:
-  * Background directory watcher monitoring `shaders/` for `.hlsl` modifications.
-  * Implemented using non-blocking Windows Overlapped I/O (`ReadDirectoryChangesW` + `CancelIoEx`), preventing thread deadlocks and allowing instantaneous engine shutdown.
-* **Atomic Pipeline Swapping**:
-  * `ReloadPipelines()` recompiles shaders and rebuilds Graphics Pipeline State Objects (Mesh 3D, Quad, Shadow Depth, Ground Grid) on the fly.
-  * Triggered automatically upon saving shader files or manually via the `F5` hotkey.
-* **Graceful Syntax Error Resilience**:
-  * In the event of a HLSL compilation syntax error, the compiler logs the detailed DXC diagnostic output and preserves existing active pipelines. Rendering continues uninterrupted without crashes.
-
-### 3. 🔊 3D Spatial Audio Subsystem & Lua OOP Bridge
-* **Listener & Emitter Integration**:
-  * `AudioListenerComponent` queries camera / entity 3D orientation and world position.
-  * `AudioSourceComponent` syncs world emitter coordinates with miniaudio 3D distance attenuation.
-* **Object-Oriented Lua 5.4 Scripting API**:
-  * Entity instances expose intuitive audio controls:
-    * `entity:PlaySound(soundPath, [volume], [pitch], [loop])`
-    * `entity:StopSound()`
-    * `entity:IsSoundPlaying()`
-    * `entity:SetAudioVolume(volume)`
-  * Global positional audio trigger: `RL.Audio.Play3D(soundPath, x, y, z, [volume])`.
-
-### 4. 🎨 Multi-Layer glTF PBR Material Autoloading
-* **Automated Texture Extraction**:
-  * `GLTFLoader` now extracts normal maps (`normal_texture`), metallic-roughness maps (`metallic_roughness_texture`), and emissive maps (`emissive_texture`).
-  * Scalar factors (`metallic_factor`, `roughness_factor`, `emissive_factor`) are bound directly into the scene's `MaterialComponent` upon model import.
+RLengine 7.2 Alpha 3 marks the third major milestone (out of 5–7 planned alphas) toward the final RLengine 7.2 release. Building upon the physics constraints, spatial audio, and shader hot-reloading introduced in Alpha 2, Alpha 3 delivers end-to-end **skeletal animation & glTF skinning**, **multi-light DX12 shading (up to 16 dynamic lights + SpotLights + atmospheric fog)**, **DirectX 11 multi-mesh & environment parity**, **concrete `AssetManager` importers with thread-safe hot-reload queuing**, **full serialization/Undo support for Joints & `WorldEnvironment`**, and **Blender-style 3D viewport navigation**.
 
 ---
 
-## 🔍 Differences: 7.2 Alpha 2 vs 7.2 Alpha 1
+## 🌟 Highlights & Major New Capabilities in Alpha 3
 
-| Feature / Subsystem | RLengine 7.2 Alpha 1 | RLengine 7.2 Alpha 2 (New) |
+### 1. 🦴 Skeletal Animation & glTF Keyframe Skinning
+* **glTF Hierarchy & TRS Keyframes (`GLTFLoader`)**: Extracts node parent indices, rest local transforms, and full Translation/Rotation/Scale keyframe timestamps and value channels (`cgltf_animation_path_type_translation`, `_rotation`, `_scale`).
+* **Forward Kinematics Runtime (`AnimationSystem`)**: Interpolates keyframes via `XMVectorLerp` and `XMQuaternionSlerp`, evaluates hierarchical bone transforms parent-before-child, updates `SkinnedMeshComponent::BonePalette` (up to 128 bones per entity), and provides `CreateProceduralTestRig` for procedural validation.
+* **GPU Skinning Upload (`RenderSystem`)**: Uploads active `BonePalette` matrices directly to per-frame structured buffers consumed by `mesh3d.hlsl`.
+* **Lua 5.4 OOP Animation Controls**: Exposes `entity:PlayAnimation(animName, [speed])`, `entity:StopAnimation()`, `entity:SetAnimationSpeed(speed)`, and `entity:IsAnimationPlaying()`.
+
+### 2. 💡 Multi-Light DX12 Shading, SpotLights, Atmosphere & Viewport Modes
+* **Up to 16 Dynamic Lights (`DynamicLightData` StructuredBuffer)**: Binds a dedicated 64-byte structured light array (`t1, space1`) alongside the primary directional shadow caster, evaluating multiple **Point** and **Spot** lights per pixel in `mesh3d.hlsl`.
+* **SpotLight Cone Falloff**: `LightType::Spot` now computes smooth inner/outer cone angle attenuation alongside radial inverse-square attenuation.
+* **World Environment & Fog**: `Scene::GetEnvironment()` stores `SkyColor`, `AmbientColor`, `AmbientIntensity`, `FogEnabled`, `FogDensity`, and `FogColor`, transmitted via `ObjectConstants` (`PassCB`) for exponential atmospheric fog and dynamic clear color across DX12 and DX11.
+* **Viewport Shading Modes**: Wired `SceneShadingMode` (`Wireframe`, `Solid`, `MaterialPreview`, `Rendered`) with a dedicated DX12 `m_wireframePipeline` and matching shader modes.
+
+### 3. 🖥️ DirectX 11 Parity & Concrete Asset Importers
+* **DX11 Multi-Mesh & Feature Parity (`DX11Device`)**: Replaced single-cube geometry with `DX11MeshCache` supporting procedural `Cube`, `Sphere`, `Plane`, `Grid`, `Quad`, and custom glTF/CPU meshes (`Mesh::GetCpuVertices()`). Added `QuadRenderComponent` alpha-blended billboards, `Wireframe` rasterizer state, `WorldEnvironment` fog/ambient/sky clear color, `MaterialComponent` parameters, and Point/Spot light attenuation in SM 5.0.
+* **Concrete `AssetManager` Importers (`AssetImporters.hpp`)**: Implemented `MeshAsset` (glTF via `cgltf`), `TextureAsset` (RGBA image decoding via `stb_image`), and `ScriptAsset` (Lua UTF-8 script source) registered via `AssetManager::RegisterDefaultImporters()`.
+* **Deadlock-Free Asset Hot-Reload Queue**: Updated `AssetManager::PollHotReload()` so `FileWatcher` pushes modified paths onto a mutex-guarded queue drained safely on the main thread.
+
+### 4. 🎛️ Blender-Style Viewport Controls, Complete Serialization & Inspector UI
+* **JSON & Binary v2 Serialization + Undo/Redo**: `SceneSerializer` (`BINARY_VERSION = 2` with v1 backwards compatibility) now persists and restores `DistanceJointComponent`, `HingeJointComponent` (including cross-entity `TargetEntity` UUID resolution), `FixedJointComponent`, and `WorldEnvironment`. `CommandHistory::EntitySnapshot` captures and restores all three joint components on delete/undo/redo.
+* **Blender-Style 3D Viewport Navigation**: Implemented MMB Orbit around focus pivot, Shift/Alt+MMB Pan, Scroll Zoom, and RMB+WASD/QE Fly navigation in `SceneBuilder`.
+* **Viewport UX & Presets**: Enabled functional Gizmo snapping (`m_snapEnabled`), added fallback AABB ray-picking in `PickEntityAtScreenPos` for entities without physics colliders, synced `World`/`Shading` editor menus to live `Scene` state, added Inspector panels for Joints, SkinnedMesh, ParticleSystem, AudioSource/Listener, and fixed `BodyType` dropdown mapping (`Static`, `Dynamic`, `Kinematic`).
+
+---
+
+## 🔍 Differences: 7.2 Alpha 3 vs 7.2 Alpha 2
+
+| Feature / Subsystem | RLengine 7.2 Alpha 2 | RLengine 7.2 Alpha 3 (New) |
 |---|---|---|
-| **Mechanical Joints** | None (rigid dynamic collisions and triggers only) | **DistanceJoint**, **HingeJoint** (with limits & motor), **FixedJoint** (with `BreakForce`) |
-| **Shader Compilation** | One-time compilation at startup; restart required | **Live Background Hot-Reloading** (`FileWatcher` + atomic PSO swap + `F5` keybind) |
-| **Shader Error Handling** | Fatal exit or startup failure on corrupt bytecode | **Fault-Tolerant Fallback**: retains working pipelines if recompile fails |
-| **Audio Scripting** | Flat global audio playback | **Full 3D Spatial Audio ECS** + `entity:PlaySound()`, `entity:StopSound()`, `RL.Audio.Play3D()` |
-| **glTF Material Import** | Single diffuse / albedo texture binding | **Multi-Layer PBR Autoloading**: Normal, Metallic-Roughness, Emissive maps and factors |
-
----
-
-## 📊 Comprehensive Comparison: 7.2 Alpha 2 vs 7.1
-
-| Component | RLengine 7.1 | RLengine 7.2 Alpha 2 |
-|---|---|---|
-| **Collision Resolution** | Discrete 60Hz AABB solver | **Swept-Sphere CCD + 15-Axis SAT OBB** |
-| **Joint Constraints** | None | **DistanceJoint, HingeJoint, FixedJoint** |
-| **Sensor / Trigger Volumes** | None (impulse separation only) | **Trigger Colliders (`IsTrigger`) with lifecycle events** |
-| **Material Pipeline** | Basic Albedo, Roughness, Metallic | **Full Tangent PBR (TBN) + Multi-Layer glTF (Normal, Metallic-Roughness, Emissive)** |
-| **Shader Pipeline** | Startup compilation only | **Live Overlapped Hot-Reloading with F5 keybind & atomic PSO swap** |
-| **Audio Subsystem** | Basic flat playback | **3D Spatial Positional Audio + Lua OOP entity methods** |
-| **Event Architecture** | Direct tightly-coupled function calls | **Type-Erased EventBus with `DepthGuard` recursion guard** |
-| **Editor Ergonomics** | Monolithic overlapping windows | **Blender 4.x DCC Station + Floating Non-Dockable REPL Console** |
-| **Undo / Redo** | Basic transform stack | **Deep Entity Cloning & Component Snapshot Undo/Redo** |
-| **Hardware Telemetry** | Log-based output | **Real-Time `MemoryStats` (Working Set & Private RAM via Win32 PSAPI)** |
+| **Skeletal Animation** | Component struct stub only | **Full glTF hierarchy + TRS keyframes, `AnimationSystem` FK, GPU `BonePalette` upload & Lua API** |
+| **Lighting & Atmosphere** | Single directional/point light, static clear color | **Up to 16 dynamic Point/Spot lights, Spot cone falloff, `WorldEnvironment` sky/ambient/fog** |
+| **Viewport Shading** | Solid PBR mode only | **4 modes: `Wireframe`, `Solid`, `MaterialPreview`, `Rendered`** |
+| **DX11 Geometry & Features** | Cube-only geometry | **`DX11MeshCache` (Cube/Sphere/Plane/Grid/Quad/glTF), Quads, Wireframe, Fog, Multi-Light** |
+| **Asset Pipeline** | Abstract `AssetManager` cache only | **Concrete `MeshAsset`, `TextureAsset`, `ScriptAsset` importers + `PollHotReload()` queue** |
+| **Serialization & Undo** | Core components only (missing joints/env) | **Binary v2 + JSON for `Distance/Hinge/FixedJoint` & `WorldEnvironment` + Undo snapshots** |
+| **Viewport Controls** | WASD + RMB look only | **Blender MMB Orbit, Shift+MMB Pan, Scroll Zoom, Snap toggle & AABB picking** |
 
 ---
 
 ## 🛠️ Verification & Smoke Testing
 
-All builds are validated using automated headless smoke tests:
+All automated Release verification suites exit with code `0` and enforce the **Strict Zero Comments Policy** (`0` comments across `source/` and `shaders/`):
 
 ```powershell
-# Automated DirectX 12 Smoke Test (15 frames + physics + joints + serialization)
+# Automated DirectX 12 Smoke Test (AnimationSystem, AssetManager, Joints/WorldEnv serialization, 15 frames)
 .\RLengine7.2.exe --smoke-test
 
-# Automated DirectX 11 Fallback Smoke Test (Legacy / Winlator compatibility)
+# Automated DirectX 11 Fallback Smoke Test (DX11 multi-mesh cache + environment + 15 frames)
 .\RLengine7.2.exe --smoke-test --dx11
 ```
-
-Both test suites exit with code `0`.

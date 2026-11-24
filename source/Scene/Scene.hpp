@@ -21,6 +21,24 @@ namespace RL
     class ParticleSystem;
     class PhysicsSystem;
     class AudioSystem;
+    class AnimationSystem;
+
+    struct WorldEnvironment
+    {
+        DirectX::XMFLOAT4 SkyColor{ 0.04f, 0.06f, 0.09f, 1.0f };
+        f32 AmbientStrength = 1.0f;
+        bool FogEnabled = false;
+        f32 FogDensity = 0.02f;
+        DirectX::XMFLOAT3 FogColor{ 0.15f, 0.18f, 0.24f };
+    };
+
+    enum class SceneShadingMode : u8
+    {
+        Wireframe = 0,
+        Solid,
+        MaterialPreview,
+        Rendered
+    };
 
     class IComponentPool
     {
@@ -317,6 +335,15 @@ namespace RL
         void SetAudioSystem(AudioSystem* audioSystem) noexcept { m_audioSystem = audioSystem; }
         [[nodiscard]] AudioSystem* GetAudioSystem() const noexcept { return m_audioSystem; }
 
+        void SetAnimationSystem(AnimationSystem* animationSystem) noexcept { m_animationSystem = animationSystem; }
+        [[nodiscard]] AnimationSystem* GetAnimationSystem() const noexcept { return m_animationSystem; }
+
+        [[nodiscard]] WorldEnvironment& GetEnvironment() noexcept { return m_environment; }
+        [[nodiscard]] const WorldEnvironment& GetEnvironment() const noexcept { return m_environment; }
+
+        void SetShadingMode(SceneShadingMode mode) noexcept { m_shadingMode = mode; }
+        [[nodiscard]] SceneShadingMode GetShadingMode() const noexcept { return m_shadingMode; }
+
         [[nodiscard]] Camera& GetCamera() noexcept { return m_camera; }
         [[nodiscard]] const Camera& GetCamera() const noexcept { return m_camera; }
 
@@ -345,9 +372,12 @@ namespace RL
         usize m_aliveEntityCount = 0;
 
         Camera m_camera;
+        WorldEnvironment m_environment{};
+        SceneShadingMode m_shadingMode = SceneShadingMode::Rendered;
         RenderSystem* m_renderSystem = nullptr;
         ParticleSystem* m_particleSystem = nullptr;
         PhysicsSystem* m_physicsSystem = nullptr;
         AudioSystem* m_audioSystem = nullptr;
+        AnimationSystem* m_animationSystem = nullptr;
     };
 }

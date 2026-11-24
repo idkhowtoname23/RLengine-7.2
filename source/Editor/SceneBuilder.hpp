@@ -233,11 +233,14 @@ namespace RL
         float m_playbackSpeed = 1.0f;
 
         DirectX::XMFLOAT4 m_worldSkyColor{ 0.04f, 0.06f, 0.09f, 1.0f };
-        float m_ambientStrength = 0.5f;
+        float m_ambientStrength = 1.0f;
         bool m_enableFog = false;
         float m_fogDensity = 0.02f;
         bool m_vsync = true;
         int m_msaaSamples = 1;
+        bool m_snapEnabled = false;
+        float m_orbitDistance = 10.0f;
+        bool m_cameraNavigating = false;
 
         RHI::GraphicsAPI m_activeAPI = RHI::GraphicsAPI::DirectX12;
 
@@ -249,8 +252,11 @@ namespace RL
         ID3D12Device* m_dx12Device = nullptr;
         bool m_gizmoDragging = false;
         TransformComponent m_gizmoStartTransform{};
+        TransformComponent m_gizmoRawTransform{};
         Entity m_gizmoTargetEntity{};
 
+        void HandleViewportCameraNavigation(Scene& scene, const Timer& timer, bool viewportHovered);
+        bool DrawTargetEntityCombo(Scene& scene, const char* label, Entity owner, Entity& target);
         void RenderEntityNode(Scene& scene, Entity ent, std::string_view filter);
         [[nodiscard]] bool HasMatchingDescendant(const Scene& scene, Entity ent, std::string_view filter) const;
     };

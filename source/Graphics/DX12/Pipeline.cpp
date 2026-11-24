@@ -38,7 +38,7 @@ namespace RL
 
     std::expected<void, std::string> Pipeline::CreateRootSignature(ID3D12Device* device)
     {
-        D3D12_ROOT_PARAMETER1 rootParams[5]{};
+        D3D12_ROOT_PARAMETER1 rootParams[6]{};
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         rootParams[0].Descriptor.ShaderRegister = 0;
@@ -76,6 +76,12 @@ namespace RL
         rootParams[4].Descriptor.RegisterSpace = 2;
         rootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
+        rootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParams[5].Descriptor.ShaderRegister = 1;
+        rootParams[5].Descriptor.RegisterSpace = 1;
+        rootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
         D3D12_STATIC_SAMPLER_DESC staticSampler{};
         staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -93,7 +99,7 @@ namespace RL
 
         D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc{};
         rootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        rootSigDesc.Desc_1_1.NumParameters = 5;
+        rootSigDesc.Desc_1_1.NumParameters = 6;
         rootSigDesc.Desc_1_1.pParameters = rootParams;
         rootSigDesc.Desc_1_1.NumStaticSamplers = 1;
         rootSigDesc.Desc_1_1.pStaticSamplers = &staticSampler;
@@ -118,7 +124,7 @@ namespace RL
             srvRange1_0.RegisterSpace = 0;
             srvRange1_0.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-            D3D12_ROOT_PARAMETER rootParams1_0[5]{};
+            D3D12_ROOT_PARAMETER rootParams1_0[6]{};
             rootParams1_0[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             rootParams1_0[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
             rootParams1_0[0].Descriptor.ShaderRegister = 0;
@@ -145,8 +151,13 @@ namespace RL
             rootParams1_0[4].Descriptor.ShaderRegister = 0;
             rootParams1_0[4].Descriptor.RegisterSpace = 2;
 
+            rootParams1_0[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+            rootParams1_0[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            rootParams1_0[5].Descriptor.ShaderRegister = 1;
+            rootParams1_0[5].Descriptor.RegisterSpace = 1;
+
             D3D12_ROOT_SIGNATURE_DESC rootSig1_0{};
-            rootSig1_0.NumParameters = 5;
+            rootSig1_0.NumParameters = 6;
             rootSig1_0.pParameters = rootParams1_0;
             rootSig1_0.NumStaticSamplers = 1;
             rootSig1_0.pStaticSamplers = &staticSampler;

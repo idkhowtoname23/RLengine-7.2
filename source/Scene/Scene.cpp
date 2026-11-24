@@ -1,6 +1,7 @@
 #include "Scene/Scene.hpp"
 #include "Scene/Systems/RenderSystem.hpp"
 #include "Scene/Systems/PhysicsSystem.hpp"
+#include "Scene/Systems/AnimationSystem.hpp"
 #include "Graphics/DX12/ParticleSystem.hpp"
 #include "Audio/AudioSystem.hpp"
 #include "Core/Events/EventBus.hpp"
@@ -313,6 +314,10 @@ namespace RL
         if (m_physicsSystem)
         {
             m_physicsSystem->Step(*this, dt);
+        }
+        if (m_animationSystem)
+        {
+            m_animationSystem->Update(*this, dt);
         }
         if (m_particleSystem)
         {

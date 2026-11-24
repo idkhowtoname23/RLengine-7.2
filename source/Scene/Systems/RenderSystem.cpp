@@ -192,7 +192,7 @@ namespace RL
 
             auto boneRes = m_boneBuffers[i].Initialize(
                 device,
-                128 * sizeof(DirectX::XMFLOAT4X4),
+                MaxBoneCount * sizeof(DirectX::XMFLOAT4X4),
                 BufferType::Generic,
                 D3D12_HEAP_TYPE_UPLOAD
             );
@@ -201,12 +201,27 @@ namespace RL
                 return std::unexpected(std::format("Failed to allocate BoneBuffer for frame {}: {}", i, boneRes.error()));
             }
 
-            DirectX::XMFLOAT4X4 identityMatrices[128];
-            for (u32 b = 0; b < 128; ++b)
+            DirectX::XMFLOAT4X4 identityMatrices[MaxBoneCount];
+            for (u32 b = 0; b < MaxBoneCount; ++b)
             {
                 DirectX::XMStoreFloat4x4(&identityMatrices[b], DirectX::XMMatrixIdentity());
             }
             std::memcpy(m_boneBuffers[i].GetMappedData(), identityMatrices, sizeof(identityMatrices));
+
+            auto lightRes = m_lightBuffers[i].Initialize(
+                device,
+                MaxDynamicLights * sizeof(DynamicLightData),
+                BufferType::Generic,
+                D3D12_HEAP_TYPE_UPLOAD
+            );
+            if (!lightRes)
+            {
+                return std::unexpected(std::format("Failed to allocate LightBuffer for frame {}: {}", i, lightRes.error()));
+            }
+            if (m_lightBuffers[i].GetMappedData())
+            {
+                std::memset(m_lightBuffers[i].GetMappedData(), 0, MaxDynamicLights * sizeof(DynamicLightData));
+            }
         }
 
         for (u32 f = 0; f < FrameCount; ++f)
@@ -378,9 +393,14 @@ namespace RL
             m_dirShadowConstantBuffers[i].Destroy();
             m_pointShadowConstantBuffers[i].Destroy();
             m_boneBuffers[i].Destroy();
+            m_lightBuffers[i].Destroy();
             m_instanceBuffers[i].Destroy();
             m_frameConstantBuffers[i].Destroy();
         }
+        m_meshPipeline = Pipeline{};
+        m_wireframePipeline = Pipeline{};
+        m_gridPipeline = Pipeline{};
+        m_shadowPipeline = Pipeline{};
 
         for (u32 f = 0; f < FrameCount; ++f)
         {
@@ -594,6 +614,10 @@ namespace RL
         }
 
         std::sort(m_visibleMeshIndices.begin(), m_visibleMeshIndices.end(), [&](u32 a, u32 b) {
+            if (meshes[a].Wireframe != meshes[b].Wireframe)
+            {
+                return meshes[a].Wireframe < meshes[b].Wireframe;
+            }
             Mesh* meshA = meshes[a].MeshRef ? meshes[a].MeshRef.get() : m_cubeMesh.get();
             Mesh* meshB = meshes[b].MeshRef ? meshes[b].MeshRef.get() : m_cubeMesh.get();
             if (meshA != meshB)
@@ -612,12 +636,13 @@ namespace RL
                 break;
             }
 
+            const bool batchWireframe = meshes[m_visibleMeshIndices[current]].Wireframe;
             Mesh* meshPtr = meshes[m_visibleMeshIndices[current]].MeshRef ? meshes[m_visibleMeshIndices[current]].MeshRef.get() : m_cubeMesh.get();
             usize next = current + 1;
             while (next < totalVisible)
             {
                 Mesh* nextMeshPtr = meshes[m_visibleMeshIndices[next]].MeshRef ? meshes[m_visibleMeshIndices[next]].MeshRef.get() : m_cubeMesh.get();
-                if (nextMeshPtr != meshPtr)
+                if (nextMeshPtr != meshPtr || meshes[m_visibleMeshIndices[next]].Wireframe != batchWireframe)
                 {
                     break;
                 }
@@ -667,7 +692,8 @@ namespace RL
                 m_activeBatches.push_back(MeshBatch{
                     .MeshPtr = meshPtr,
                     .StartInstance = startInstance,
-                    .Count = batchCount
+                    .Count = batchCount,
+                    .Wireframe = batchWireframe
                 });
 
                 meshInstanceCount += batchCount;
@@ -848,12 +874,27 @@ namespace RL
         const auto& camPos = cam.GetPosition();
         passConstants->CameraPos = { camPos.x, camPos.y, camPos.z, 1.0f };
 
+        const auto& env = scene.GetEnvironment();
+        const SceneShadingMode shadingMode = scene.GetShadingMode();
+
         passConstants->SunDirection = { 0.5f, 0.8f, -0.7f, 3.0f };
         passConstants->SunColor = { 1.0f, 0.98f, 0.92f, 1.0f };
         passConstants->AmbientColor = { 0.15f, 0.18f, 0.22f, 1.0f };
         passConstants->PointLightPos = { 0.0f, 4.0f, 0.0f, 15.0f };
         passConstants->PointLightColor = { 1.0f, 0.85f, 0.6f, 5.0f };
         passConstants->PBRParams = { 0.2f, 0.45f, 1.0f, 1.0f };
+        passConstants->FogColorDensity = { env.FogColor.x, env.FogColor.y, env.FogColor.z, env.FogDensity };
+        passConstants->EnvParams = {
+            env.FogEnabled ? 1.0f : 0.0f,
+            env.AmbientStrength,
+            static_cast<f32>(static_cast<u8>(shadingMode)),
+            0.0f
+        };
+
+        auto* mappedLights = static_cast<DynamicLightData*>(m_lightBuffers[frameIndex].GetMappedData());
+        u32 activeDynamicLightCount = 0;
+        i32 primaryShadowLightIdx = -1;
+        bool hasExplicitShadowPointLight = false;
 
         const auto* lightPool = scene.GetPool<LightComponent>();
         const auto* transformPool = scene.GetPool<TransformComponent>();
@@ -867,19 +908,97 @@ namespace RL
                 const auto* tr = transformPool->TryGet(entityIdx);
                 if (!tr) continue;
 
+                const Entity entity = scene.GetEntityFromIndex(entityIdx);
+                const DirectX::XMMATRIX worldMat = scene.GetWorldMatrix(entity);
+                DirectX::XMFLOAT4X4 worldF{};
+                DirectX::XMStoreFloat4x4(&worldF, worldMat);
+                const DirectX::XMFLOAT3 worldPos{ worldF._41, worldF._42, worldF._43 };
+
                 if (lights[i].Type == LightType::Directional)
                 {
-                    passConstants->SunDirection = { tr->Position.x != 0.0f || tr->Position.y != 0.0f || tr->Position.z != 0.0f ? tr->Position.x : 0.5f,
-                                                    tr->Position.y != 0.0f ? tr->Position.y : 0.8f,
-                                                    tr->Position.z != 0.0f ? tr->Position.z : -0.7f,
-                                                    lights[i].Intensity };
+                    DirectX::XMFLOAT3 dir{ 0.5f, 0.8f, -0.7f };
+                    if (tr->Position.x != 0.0f || tr->Position.y != 0.0f || tr->Position.z != 0.0f)
+                    {
+                        dir = tr->Position;
+                    }
+                    else if (tr->Rotation.x != 0.0f || tr->Rotation.y != 0.0f || tr->Rotation.z != 0.0f)
+                    {
+                        const DirectX::XMVECTOR baseDir = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+                        const DirectX::XMVECTOR rotDir = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(baseDir, worldMat));
+                        DirectX::XMStoreFloat3(&dir, rotDir);
+                    }
+                    passConstants->SunDirection = { dir.x, dir.y, dir.z, lights[i].Intensity };
                     passConstants->SunColor = { lights[i].Color.x, lights[i].Color.y, lights[i].Color.z, 1.0f };
                 }
-                else if (lights[i].Type == LightType::Point)
+                else if (lights[i].Type == LightType::Point || lights[i].Type == LightType::Spot)
                 {
-                    passConstants->PointLightPos = { tr->Position.x, tr->Position.y, tr->Position.z, lights[i].Range };
-                    passConstants->PointLightColor = { lights[i].Color.x, lights[i].Color.y, lights[i].Color.z, lights[i].Intensity };
+                    if (mappedLights && activeDynamicLightCount < MaxDynamicLights)
+                    {
+                        DynamicLightData& gpuLight = mappedLights[activeDynamicLightCount];
+                        const f32 safeRange = std::max(lights[i].Range, 0.01f);
+                        gpuLight.PositionRange = { worldPos.x, worldPos.y, worldPos.z, safeRange };
+                        gpuLight.ColorIntensity = { lights[i].Color.x, lights[i].Color.y, lights[i].Color.z, lights[i].Intensity };
+
+                        if (lights[i].Type == LightType::Spot)
+                        {
+                            const DirectX::XMVECTOR localDown = DirectX::XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
+                            const DirectX::XMVECTOR spotDirVec = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(localDown, worldMat));
+                            DirectX::XMFLOAT3 spotDir{ 0.0f, -1.0f, 0.0f };
+                            DirectX::XMStoreFloat3(&spotDir, spotDirVec);
+
+                            const f32 halfAngleRad = DirectX::XMConvertToRadians(std::clamp(lights[i].SpotAngle * 0.5f, 1.0f, 89.0f));
+                            const f32 outerCos = std::cos(halfAngleRad);
+                            const f32 innerCos = std::cos(halfAngleRad * 0.8f);
+
+                            gpuLight.DirectionType = { spotDir.x, spotDir.y, spotDir.z, static_cast<f32>(static_cast<u8>(LightType::Spot)) };
+                            gpuLight.SpotParams = { innerCos, outerCos, lights[i].CastShadows ? 1.0f : 0.0f, 0.0f };
+                        }
+                        else
+                        {
+                            gpuLight.DirectionType = { 0.0f, -1.0f, 0.0f, static_cast<f32>(static_cast<u8>(LightType::Point)) };
+                            gpuLight.SpotParams = { 1.0f, -1.0f, lights[i].CastShadows ? 1.0f : 0.0f, 0.0f };
+
+                            if (!hasExplicitShadowPointLight && (lights[i].CastShadows || primaryShadowLightIdx < 0))
+                            {
+                                primaryShadowLightIdx = static_cast<i32>(activeDynamicLightCount);
+                                hasExplicitShadowPointLight = lights[i].CastShadows;
+                                passConstants->PointLightPos = { worldPos.x, worldPos.y, worldPos.z, safeRange };
+                                passConstants->PointLightColor = { lights[i].Color.x, lights[i].Color.y, lights[i].Color.z, lights[i].Intensity };
+                            }
+                        }
+
+                        ++activeDynamicLightCount;
+                    }
                 }
+            }
+        }
+
+        if (mappedLights && primaryShadowLightIdx >= 0 && static_cast<u32>(primaryShadowLightIdx) < activeDynamicLightCount)
+        {
+            mappedLights[primaryShadowLightIdx].SpotParams.w = 1.0f;
+        }
+        passConstants->EnvParams.w = static_cast<f32>(activeDynamicLightCount);
+
+        auto* mappedBones = static_cast<DirectX::XMFLOAT4X4*>(m_boneBuffers[frameIndex].GetMappedData());
+        if (mappedBones)
+        {
+            u32 copiedBones = 0;
+            if (const auto* skinnedPool = scene.GetPool<SkinnedMeshComponent>())
+            {
+                const auto skinnedMeshes = skinnedPool->GetData();
+                for (const auto& sk : skinnedMeshes)
+                {
+                    if (sk.IsVisible && !sk.BonePalette.empty())
+                    {
+                        copiedBones = static_cast<u32>(std::min(sk.BonePalette.size(), static_cast<usize>(MaxBoneCount)));
+                        std::memcpy(mappedBones, sk.BonePalette.data(), copiedBones * sizeof(DirectX::XMFLOAT4X4));
+                        break;
+                    }
+                }
+            }
+            for (u32 b = copiedBones; b < MaxBoneCount; ++b)
+            {
+                DirectX::XMStoreFloat4x4(&mappedBones[b], DirectX::XMMatrixIdentity());
             }
         }
 
@@ -1037,6 +1156,7 @@ namespace RL
         const D3D12_GPU_VIRTUAL_ADDRESS passGpuAddr = m_constantBuffers[frameIndex].GetGPUVirtualAddress();
         const D3D12_GPU_VIRTUAL_ADDRESS ptShadowGpuAddr = m_pointShadowConstantBuffers[frameIndex].GetGPUVirtualAddress();
         const D3D12_GPU_VIRTUAL_ADDRESS boneGpuAddr = m_boneBuffers[frameIndex].GetGPUVirtualAddress();
+        const D3D12_GPU_VIRTUAL_ADDRESS lightGpuAddr = m_lightBuffers[frameIndex].GetGPUVirtualAddress();
 
         u32 potentialInstances = 0;
         if (const auto* meshPool = scene.GetPool<MeshComponent>())
@@ -1068,7 +1188,7 @@ namespace RL
         u32 meshInstanceCount = 0;
         PrepareMeshInstances(scene, mappedInstances, meshInstanceCount, cameraFrustum);
 
-        if (m_shadowMap && m_shadowPipeline.GetPipelineState() && !m_activeBatches.empty())
+        if (shadingMode == SceneShadingMode::Rendered && m_shadowMap && m_shadowPipeline.GetPipelineState() && !m_activeBatches.empty())
         {
             for (u32 cascadeIdx = 0; cascadeIdx < ShadowMap::CascadeCount; ++cascadeIdx)
             {
@@ -1128,18 +1248,38 @@ namespace RL
 
         if (!m_activeBatches.empty() && m_meshPipeline.GetPipelineState())
         {
-            m_meshPipeline.Bind(cmdList);
-            cmdList->SetGraphicsRootConstantBufferView(0, passGpuAddr);
-            if (m_descriptorManager)
-            {
-                m_descriptorManager->SetGraphicsRootDescriptorTable(cmdList, 1, 0);
-            }
-            cmdList->SetGraphicsRootShaderResourceView(2, instanceGpuAddr);
-            cmdList->SetGraphicsRootShaderResourceView(4, boneGpuAddr);
-            cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            bool hasBoundMeshPipeline = false;
+            bool boundWireframe = false;
 
             for (const auto& batch : m_activeBatches)
             {
+                const bool useWireframe = ((shadingMode == SceneShadingMode::Wireframe) || batch.Wireframe) &&
+                                          (m_wireframePipeline.GetPipelineState() != nullptr);
+
+                if (!hasBoundMeshPipeline || useWireframe != boundWireframe)
+                {
+                    if (useWireframe)
+                    {
+                        m_wireframePipeline.Bind(cmdList);
+                    }
+                    else
+                    {
+                        m_meshPipeline.Bind(cmdList);
+                    }
+                    cmdList->SetGraphicsRootConstantBufferView(0, passGpuAddr);
+                    if (m_descriptorManager)
+                    {
+                        m_descriptorManager->SetGraphicsRootDescriptorTable(cmdList, 1, 0);
+                    }
+                    cmdList->SetGraphicsRootShaderResourceView(2, instanceGpuAddr);
+                    cmdList->SetGraphicsRootShaderResourceView(4, boneGpuAddr);
+                    cmdList->SetGraphicsRootShaderResourceView(5, lightGpuAddr);
+                    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                    hasBoundMeshPipeline = true;
+                    boundWireframe = useWireframe;
+                }
+
                 cmdList->SetGraphicsRoot32BitConstant(3, batch.StartInstance, 0);
                 batch.MeshPtr->Bind(cmdList);
                 cmdList->DrawIndexedInstanced(batch.MeshPtr->GetIndexCount(), batch.Count, 0, 0, batch.StartInstance);
@@ -1258,6 +1398,17 @@ namespace RL
             return std::unexpected(std::format("Mesh pipeline creation failed: {}", initMeshRes.error()));
         }
 
+        PipelineConfig wireframeCfg = meshCfg;
+        wireframeCfg.FillMode = D3D12_FILL_MODE_WIREFRAME;
+        wireframeCfg.CullMode = D3D12_CULL_MODE_NONE;
+
+        Pipeline newWireframePipeline;
+        auto initWireframeRes = newWireframePipeline.Initialize(m_device, (*meshVsBlob).Get(), (*meshPsBlob).Get(), meshLayout, wireframeCfg);
+        if (!initWireframeRes)
+        {
+            return std::unexpected(std::format("Wireframe pipeline creation failed: {}", initWireframeRes.error()));
+        }
+
         const auto quadShaderPath = resolveShader("shaders/quad.hlsl");
         auto quadVsBlob = m_shaderCompiler->RecompileVertexShader(quadShaderPath, "VSMain", "6_5");
         if (!quadVsBlob)
@@ -1352,12 +1503,13 @@ namespace RL
         }
 
         m_meshPipeline = std::move(newMeshPipeline);
+        m_wireframePipeline = std::move(newWireframePipeline);
         m_ownedQuadPipeline = std::move(newQuadPipeline);
         m_quadPipeline = &m_ownedQuadPipeline;
         m_shadowPipeline = std::move(newShadowPipeline);
         m_gridPipeline = std::move(newGridPipeline);
 
-        RL_LOG_INFO("[RenderSystem] All 4 graphics pipelines reloaded successfully.");
+        RL_LOG_INFO("[RenderSystem] All 5 graphics pipelines reloaded successfully.");
         return {};
     }
 }

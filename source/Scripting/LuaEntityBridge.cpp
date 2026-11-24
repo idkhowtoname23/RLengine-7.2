@@ -13,6 +13,7 @@
 #include <lua.hpp>
 #include <format>
 #include <string>
+#include <cstring>
 
 namespace RL
 {
@@ -82,6 +83,18 @@ namespace RL
 
             lua_pushcfunction(L, &LuaEntityBridge::Entity_SetAudioVolume);
             lua_setfield(L, -2, "SetAudioVolume");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_PlayAnimation);
+            lua_setfield(L, -2, "PlayAnimation");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_StopAnimation);
+            lua_setfield(L, -2, "StopAnimation");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_SetAnimationSpeed);
+            lua_setfield(L, -2, "SetAnimationSpeed");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_IsAnimationPlaying);
+            lua_setfield(L, -2, "IsAnimationPlaying");
 
             lua_pushcfunction(L, &LuaEntityBridge::Entity_IsValid);
             lua_setfield(L, -2, "IsValid");
@@ -698,6 +711,91 @@ namespace RL
         }
 
         return 0;
+    }
+
+    int LuaEntityBridge::Entity_PlayAnimation(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const char* animName = luaL_optstring(L, 2, "");
+        const bool hasSpeedArg = (lua_gettop(L) >= 3 && !lua_isnil(L, 3));
+        const f32 speed = hasSpeedArg ? static_cast<f32>(luaL_checknumber(L, 3)) : 1.0f;
+
+        const Entity ent(ud->entityID);
+        auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(ent);
+        if (!skinned)
+        {
+            skinned = &s_scene->AddComponent<SkinnedMeshComponent>(ent);
+        }
+
+        if (skinned)
+        {
+            if (animName && std::strlen(animName) > 0)
+            {
+                skinned->Play(animName);
+            }
+            else
+            {
+                skinned->IsPlaying = true;
+            }
+            if (hasSpeedArg)
+            {
+                skinned->AnimationSpeed = speed;
+            }
+        }
+
+        return 0;
+    }
+
+    int LuaEntityBridge::Entity_StopAnimation(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        if (auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(Entity(ud->entityID)))
+        {
+            skinned->IsPlaying = false;
+        }
+
+        return 0;
+    }
+
+    int LuaEntityBridge::Entity_SetAnimationSpeed(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const f32 speed = static_cast<f32>(luaL_checknumber(L, 2));
+        if (auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(Entity(ud->entityID)))
+        {
+            skinned->AnimationSpeed = speed;
+        }
+
+        return 0;
+    }
+
+    int LuaEntityBridge::Entity_IsAnimationPlaying(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+
+        const auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(Entity(ud->entityID));
+        lua_pushboolean(L, (skinned && skinned->IsPlaying) ? 1 : 0);
+        return 1;
     }
 
     int LuaEntityBridge::Entity_IsValid(lua_State* L)

@@ -119,6 +119,7 @@ namespace RL
                                                    ImGuiWindowFlags_NoBringToFrontOnFocus;
                 if (ImGui::Begin("##BlenderViewportInteraction", nullptr, vpInteractFlags))
                 {
+                    bool gizmoUsed = false;
                     if (m_selectedEntity.IsValid() && scene.IsAlive(m_selectedEntity) && scene.HasComponent<TransformComponent>(m_selectedEntity))
                     {
                         auto& t = scene.GetComponent<TransformComponent>(m_selectedEntity);
@@ -129,6 +130,8 @@ namespace RL
                         const auto& cam = scene.GetCamera();
                         const XMMATRIX vMat = cam.CalculateViewMatrix();
                         const XMMATRIX pMat = cam.CalculateProjectionMatrix();
+
+                        m_gizmo.SetSpace(m_transformSpace == TransformSpace::Local ? Editor::GizmoSpace::Local : Editor::GizmoSpace::World);
 
                         if (m_activeTool == BlenderTool::Move)
                         {
@@ -151,50 +154,69 @@ namespace RL
                             m_activeTool == BlenderTool::Scale || m_activeTool == BlenderTool::Transform)
                         {
                             auto gizmoRes = m_gizmo.Manipulate(world4x4, vMat, pMat, ImVec2(vpAreaX, vpContentY), ImVec2(vpAreaWidth, vpContentHeight));
+                            gizmoUsed = gizmoRes.used;
                             if (gizmoRes.changed)
                             {
                                 if (!m_gizmoDragging)
                                 {
                                     m_gizmoDragging = true;
                                     m_gizmoStartTransform = t;
+                                    m_gizmoRawTransform = t;
                                     m_gizmoTargetEntity = m_selectedEntity;
                                 }
 
-                                if (m_activeTool == BlenderTool::Move)
+                                auto SnapVal = [](float v, float step) -> float {
+                                    return std::round(v / step) * step;
+                                };
+
+                                if (m_activeTool == BlenderTool::Move || m_activeTool == BlenderTool::Transform)
                                 {
-                                    t.Position.x += gizmoRes.deltaPos.x;
-                                    t.Position.y += gizmoRes.deltaPos.y;
-                                    t.Position.z += gizmoRes.deltaPos.z;
+                                    m_gizmoRawTransform.Position.x += gizmoRes.deltaPos.x;
+                                    m_gizmoRawTransform.Position.y += gizmoRes.deltaPos.y;
+                                    m_gizmoRawTransform.Position.z += gizmoRes.deltaPos.z;
+                                    if (m_snapEnabled)
+                                    {
+                                        if (std::abs(gizmoRes.deltaPos.x) > 0.0f) t.Position.x = SnapVal(m_gizmoRawTransform.Position.x, 0.5f);
+                                        if (std::abs(gizmoRes.deltaPos.y) > 0.0f) t.Position.y = SnapVal(m_gizmoRawTransform.Position.y, 0.5f);
+                                        if (std::abs(gizmoRes.deltaPos.z) > 0.0f) t.Position.z = SnapVal(m_gizmoRawTransform.Position.z, 0.5f);
+                                    }
+                                    else
+                                    {
+                                        t.Position = m_gizmoRawTransform.Position;
+                                    }
                                 }
-                                else if (m_activeTool == BlenderTool::Rotate)
+                                if (m_activeTool == BlenderTool::Rotate || m_activeTool == BlenderTool::Transform)
                                 {
-                                    t.Rotation.x += gizmoRes.deltaRot.x;
-                                    t.Rotation.y += gizmoRes.deltaRot.y;
-                                    t.Rotation.z += gizmoRes.deltaRot.z;
+                                    m_gizmoRawTransform.Rotation.x += gizmoRes.deltaRot.x;
+                                    m_gizmoRawTransform.Rotation.y += gizmoRes.deltaRot.y;
+                                    m_gizmoRawTransform.Rotation.z += gizmoRes.deltaRot.z;
+                                    if (m_snapEnabled)
+                                    {
+                                        const float rotStep = XMConvertToRadians(15.0f);
+                                        if (std::abs(gizmoRes.deltaRot.x) > 0.0f) t.Rotation.x = SnapVal(m_gizmoRawTransform.Rotation.x, rotStep);
+                                        if (std::abs(gizmoRes.deltaRot.y) > 0.0f) t.Rotation.y = SnapVal(m_gizmoRawTransform.Rotation.y, rotStep);
+                                        if (std::abs(gizmoRes.deltaRot.z) > 0.0f) t.Rotation.z = SnapVal(m_gizmoRawTransform.Rotation.z, rotStep);
+                                    }
+                                    else
+                                    {
+                                        t.Rotation = m_gizmoRawTransform.Rotation;
+                                    }
                                 }
-                                else if (m_activeTool == BlenderTool::Scale)
+                                if (m_activeTool == BlenderTool::Scale || m_activeTool == BlenderTool::Transform)
                                 {
-                                    t.Scale.x += gizmoRes.deltaScale.x;
-                                    t.Scale.y += gizmoRes.deltaScale.y;
-                                    t.Scale.z += gizmoRes.deltaScale.z;
-                                    t.Scale.x = (std::max)(t.Scale.x, 0.001f);
-                                    t.Scale.y = (std::max)(t.Scale.y, 0.001f);
-                                    t.Scale.z = (std::max)(t.Scale.z, 0.001f);
-                                }
-                                else if (m_activeTool == BlenderTool::Transform)
-                                {
-                                    t.Position.x += gizmoRes.deltaPos.x;
-                                    t.Position.y += gizmoRes.deltaPos.y;
-                                    t.Position.z += gizmoRes.deltaPos.z;
-                                    t.Rotation.x += gizmoRes.deltaRot.x;
-                                    t.Rotation.y += gizmoRes.deltaRot.y;
-                                    t.Rotation.z += gizmoRes.deltaRot.z;
-                                    t.Scale.x += gizmoRes.deltaScale.x;
-                                    t.Scale.y += gizmoRes.deltaScale.y;
-                                    t.Scale.z += gizmoRes.deltaScale.z;
-                                    t.Scale.x = (std::max)(t.Scale.x, 0.001f);
-                                    t.Scale.y = (std::max)(t.Scale.y, 0.001f);
-                                    t.Scale.z = (std::max)(t.Scale.z, 0.001f);
+                                    m_gizmoRawTransform.Scale.x = (std::max)(m_gizmoRawTransform.Scale.x + gizmoRes.deltaScale.x, 0.001f);
+                                    m_gizmoRawTransform.Scale.y = (std::max)(m_gizmoRawTransform.Scale.y + gizmoRes.deltaScale.y, 0.001f);
+                                    m_gizmoRawTransform.Scale.z = (std::max)(m_gizmoRawTransform.Scale.z + gizmoRes.deltaScale.z, 0.001f);
+                                    if (m_snapEnabled)
+                                    {
+                                        if (std::abs(gizmoRes.deltaScale.x) > 0.0f) t.Scale.x = (std::max)(SnapVal(m_gizmoRawTransform.Scale.x, 0.25f), 0.25f);
+                                        if (std::abs(gizmoRes.deltaScale.y) > 0.0f) t.Scale.y = (std::max)(SnapVal(m_gizmoRawTransform.Scale.y, 0.25f), 0.25f);
+                                        if (std::abs(gizmoRes.deltaScale.z) > 0.0f) t.Scale.z = (std::max)(SnapVal(m_gizmoRawTransform.Scale.z, 0.25f), 0.25f);
+                                    }
+                                    else
+                                    {
+                                        t.Scale = m_gizmoRawTransform.Scale;
+                                    }
                                 }
                             }
                         }
@@ -213,7 +235,13 @@ namespace RL
                         }
                     }
 
-                    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive() && !ImGui::IsAnyItemHovered())
+                    const bool vpHovered = ImGui::IsWindowHovered();
+                    if (!m_gizmoDragging && !gizmoUsed && !ImGui::IsAnyItemActive())
+                    {
+                        HandleViewportCameraNavigation(scene, timer, vpHovered);
+                    }
+
+                    if (vpHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !gizmoUsed && !m_gizmoDragging && !ImGui::IsAnyItemActive() && !ImGui::IsAnyItemHovered())
                     {
                         const ImVec2 mousePos = ImGui::GetMousePos();
                         Entity picked = PickEntityAtScreenPos(scene, mousePos, ImVec2(vpAreaX, vpContentY), ImVec2(vpAreaWidth, vpContentHeight));
@@ -422,6 +450,7 @@ namespace RL
                 if (ImGui::MenuItem("New Scene", "Ctrl+N"))
                 {
                     scene.Clear();
+                    scene.GetEnvironment() = WorldEnvironment{};
                     m_selectedEntity = Entity{};
                 }
                 if (ImGui::MenuItem("Open Scene...", "Ctrl+O"))
@@ -544,6 +573,14 @@ namespace RL
                         scene.AddComponent<LightComponent>(e, LightType::Directional, XMFLOAT3{1.0f, 1.0f, 0.9f}, 5.0f);
                         m_selectedEntity = e;
                     }
+                    if (ImGui::MenuItem("Spot Light"))
+                    {
+                        Entity e = scene.CreateEntity("SpotLight");
+                        auto& lc = scene.AddComponent<LightComponent>(e, LightType::Spot, XMFLOAT3{1.0f, 0.95f, 0.85f}, 10.0f, 15.0f);
+                        lc.SpotAngle = 45.0f;
+                        scene.GetComponent<TransformComponent>(e).Rotation.x = XMConvertToRadians(45.0f);
+                        m_selectedEntity = e;
+                    }
                     ImGui::EndMenu();
                 }
 
@@ -587,6 +624,37 @@ namespace RL
                         auto& t = scene.GetComponent<TransformComponent>(e);
                         t.Position.y = 7.0f;
                         m_selectedEntity = e;
+                    }
+                    if (ImGui::MenuItem("Hinged Door (Two-Body)"))
+                    {
+                        Entity frame = scene.CreateEntity("DoorFrame");
+                        scene.AddComponent<MeshComponent>(frame, "Cube");
+                        auto& frameT = scene.GetComponent<TransformComponent>(frame);
+                        frameT.Position = { -0.7f, 1.0f, 0.0f };
+                        frameT.Scale = { 0.2f, 2.0f, 0.2f };
+                        auto& frameRb = scene.AddComponent<RigidBodyComponent>(frame);
+                        frameRb.Type = BodyType::Static;
+                        auto& frameBc = scene.AddComponent<BoxColliderComponent>(frame);
+                        frameBc.HalfSize = { 0.5f, 0.5f, 0.5f };
+
+                        Entity door = scene.CreateEntity("DoorLeaf");
+                        scene.AddComponent<MeshComponent>(door, "Cube");
+                        auto& doorT = scene.GetComponent<TransformComponent>(door);
+                        doorT.Position = { 0.0f, 1.0f, 0.0f };
+                        doorT.Scale = { 1.2f, 2.0f, 0.1f };
+                        auto& doorRb = scene.AddComponent<RigidBodyComponent>(door);
+                        doorRb.Type = BodyType::Dynamic;
+                        doorRb.Mass = 5.0f;
+                        auto& doorBc = scene.AddComponent<BoxColliderComponent>(door);
+                        doorBc.HalfSize = { 0.5f, 0.5f, 0.5f };
+                        auto& hj = scene.AddComponent<HingeJointComponent>(door);
+                        hj.TargetEntity = frame;
+                        hj.Anchor = { -0.5f, 0.0f, 0.0f };
+                        hj.Axis = { 0.0f, 1.0f, 0.0f };
+                        hj.EnableLimits = true;
+                        hj.LowerAngleLimit = -1.5707963f;
+                        hj.UpperAngleLimit = 1.5707963f;
+                        m_selectedEntity = door;
                     }
                     ImGui::EndMenu();
                 }
@@ -838,8 +906,7 @@ namespace RL
             }
 
             ImGui::SameLine(0, 8);
-            static bool snapEnabled = false;
-            ImGui::Checkbox("Snap", &snapEnabled);
+            ImGui::Checkbox("Snap", &m_snapEnabled);
 
             const float rightBarWidth = 450.0f;
             if (width > rightBarWidth + 200.0f)
@@ -926,7 +993,9 @@ namespace RL
             }
             ImGui::SameLine(0, 8);
 
-            auto ShadingButton = [this](const char* label, const char* tooltip, ViewportShadingMode mode) {
+            m_shadingMode = static_cast<ViewportShadingMode>(scene.GetShadingMode());
+
+            auto ShadingButton = [this, &scene](const char* label, const char* tooltip, ViewportShadingMode mode) {
                 const bool active = (m_shadingMode == mode);
                 if (active)
                 {
@@ -942,6 +1011,7 @@ namespace RL
                 if (ImGui::Button(label, ImVec2(44.0f, 20.0f)))
                 {
                     m_shadingMode = mode;
+                    scene.SetShadingMode(static_cast<SceneShadingMode>(mode));
                 }
                 if (ImGui::IsItemHovered())
                 {
@@ -1045,15 +1115,18 @@ namespace RL
                     auto& cam = scene.GetCamera();
                     if (a.axisId == 0)
                     {
-                        cam.SetPosition(DirectX::XMFLOAT3(10.0f, 0.0f, -10.0f));
+                        cam.SetPosition(DirectX::XMFLOAT3(m_orbitDistance, 0.0f, 0.0f));
+                        cam.SetRotation(DirectX::XMFLOAT3(0.0f, -90.0f, 0.0f));
                     }
                     else if (a.axisId == 1)
                     {
-                        cam.SetPosition(DirectX::XMFLOAT3(0.0f, 10.0f, -10.0f));
+                        cam.SetPosition(DirectX::XMFLOAT3(0.0f, m_orbitDistance, 0.0f));
+                        cam.SetRotation(DirectX::XMFLOAT3(89.0f, 0.0f, 0.0f));
                     }
                     else if (a.axisId == 2)
                     {
-                        cam.SetPosition(DirectX::XMFLOAT3(0.0f, 0.0f, -10.0f));
+                        cam.SetPosition(DirectX::XMFLOAT3(0.0f, 0.0f, -m_orbitDistance));
+                        cam.SetRotation(DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f));
                     }
                 }
             }
@@ -1387,16 +1460,37 @@ namespace RL
                     {
                         ImGui::TextColored(ImVec4(0.91f, 0.49f, 0.051f, 1.0f), "World Environment");
                         ImGui::Separator();
-                        float col[4] = { m_worldSkyColor.x, m_worldSkyColor.y, m_worldSkyColor.z, m_worldSkyColor.w };
+                        auto& env = scene.GetEnvironment();
+                        m_worldSkyColor = env.SkyColor;
+                        m_ambientStrength = env.AmbientStrength;
+                        m_enableFog = env.FogEnabled;
+                        m_fogDensity = env.FogDensity;
+
+                        float col[4] = { env.SkyColor.x, env.SkyColor.y, env.SkyColor.z, env.SkyColor.w };
                         if (ImGui::ColorEdit4("Sky / Horizon", col))
                         {
-                            m_worldSkyColor = XMFLOAT4(col[0], col[1], col[2], col[3]);
+                            env.SkyColor = XMFLOAT4(col[0], col[1], col[2], col[3]);
+                            m_worldSkyColor = env.SkyColor;
                         }
-                        ImGui::SliderFloat("Ambient Strength", &m_ambientStrength, 0.0f, 2.0f);
-                        ImGui::Checkbox("Atmospheric Fog", &m_enableFog);
-                        if (m_enableFog)
+                        if (ImGui::SliderFloat("Ambient Strength", &env.AmbientStrength, 0.0f, 2.0f))
                         {
-                            ImGui::SliderFloat("Fog Density", &m_fogDensity, 0.001f, 0.1f);
+                            m_ambientStrength = env.AmbientStrength;
+                        }
+                        if (ImGui::Checkbox("Atmospheric Fog", &env.FogEnabled))
+                        {
+                            m_enableFog = env.FogEnabled;
+                        }
+                        if (env.FogEnabled)
+                        {
+                            if (ImGui::SliderFloat("Fog Density", &env.FogDensity, 0.001f, 0.1f))
+                            {
+                                m_fogDensity = env.FogDensity;
+                            }
+                            float fogCol[3] = { env.FogColor.x, env.FogColor.y, env.FogColor.z };
+                            if (ImGui::ColorEdit3("Fog Color", fogCol))
+                            {
+                                env.FogColor = XMFLOAT3(fogCol[0], fogCol[1], fogCol[2]);
+                            }
                         }
                         break;
                     }
@@ -1461,15 +1555,23 @@ namespace RL
 
                         if (ImGui::BeginPopup("AddComponentPopup"))
                         {
-                            if (ImGui::MenuItem("TransformComponent")) { scene.AddComponent<TransformComponent>(m_selectedEntity); }
-                            if (ImGui::MenuItem("MeshComponent")) { scene.AddComponent<MeshComponent>(m_selectedEntity, "Cube"); }
-                            if (ImGui::MenuItem("LightComponent")) { scene.AddComponent<LightComponent>(m_selectedEntity); }
-                            if (ImGui::MenuItem("MaterialComponent")) { scene.AddComponent<MaterialComponent>(m_selectedEntity); }
-                            if (ImGui::MenuItem("CameraComponent")) { scene.AddComponent<CameraComponent>(m_selectedEntity); }
-                            if (ImGui::MenuItem("RigidBodyComponent")) { scene.AddComponent<RigidBodyComponent>(m_selectedEntity); }
-                            if (ImGui::MenuItem("BoxColliderComponent")) { scene.AddComponent<BoxColliderComponent>(m_selectedEntity); }
-                            if (ImGui::MenuItem("SphereColliderComponent")) { scene.AddComponent<SphereColliderComponent>(m_selectedEntity); }
-                            if (ImGui::MenuItem("ParticleEmitterComponent")) { scene.AddComponent<ParticleEmitterComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("TransformComponent") && !scene.HasComponent<TransformComponent>(m_selectedEntity)) { scene.AddComponent<TransformComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("MeshComponent") && !scene.HasComponent<MeshComponent>(m_selectedEntity)) { scene.AddComponent<MeshComponent>(m_selectedEntity, "Cube"); }
+                            if (ImGui::MenuItem("LightComponent") && !scene.HasComponent<LightComponent>(m_selectedEntity)) { scene.AddComponent<LightComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("MaterialComponent") && !scene.HasComponent<MaterialComponent>(m_selectedEntity)) { scene.AddComponent<MaterialComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("CameraComponent") && !scene.HasComponent<CameraComponent>(m_selectedEntity)) { scene.AddComponent<CameraComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("RigidBodyComponent") && !scene.HasComponent<RigidBodyComponent>(m_selectedEntity)) { scene.AddComponent<RigidBodyComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("BoxColliderComponent") && !scene.HasComponent<BoxColliderComponent>(m_selectedEntity)) { scene.AddComponent<BoxColliderComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("SphereColliderComponent") && !scene.HasComponent<SphereColliderComponent>(m_selectedEntity)) { scene.AddComponent<SphereColliderComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("DistanceJointComponent") && !scene.HasComponent<DistanceJointComponent>(m_selectedEntity)) { scene.AddComponent<DistanceJointComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("HingeJointComponent") && !scene.HasComponent<HingeJointComponent>(m_selectedEntity)) { scene.AddComponent<HingeJointComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("FixedJointComponent") && !scene.HasComponent<FixedJointComponent>(m_selectedEntity)) { scene.AddComponent<FixedJointComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("ParticleEmitterComponent") && !scene.HasComponent<ParticleEmitterComponent>(m_selectedEntity)) { scene.AddComponent<ParticleEmitterComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("SkinnedMeshComponent") && !scene.HasComponent<SkinnedMeshComponent>(m_selectedEntity)) { scene.AddComponent<SkinnedMeshComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("AudioSourceComponent") && !scene.HasComponent<AudioSourceComponent>(m_selectedEntity)) { scene.AddComponent<AudioSourceComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("AudioListenerComponent") && !scene.HasComponent<AudioListenerComponent>(m_selectedEntity)) { scene.AddComponent<AudioListenerComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("ScriptComponent") && !scene.HasComponent<ScriptComponent>(m_selectedEntity)) { scene.AddComponent<ScriptComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("QuadRenderComponent") && !scene.HasComponent<QuadRenderComponent>(m_selectedEntity)) { scene.AddComponent<QuadRenderComponent>(m_selectedEntity); }
                             ImGui::EndPopup();
                         }
 
@@ -1496,6 +1598,12 @@ namespace RL
                             if (ImGui::CollapsingHeader("Light Component", ImGuiTreeNodeFlags_DefaultOpen))
                             {
                                 auto& lc = scene.GetComponent<LightComponent>(m_selectedEntity);
+                                const char* lightTypes[] = { "Point", "Directional", "Spot" };
+                                int lType = static_cast<int>(lc.Type);
+                                if (ImGui::Combo("Light Type", &lType, lightTypes, IM_ARRAYSIZE(lightTypes)))
+                                {
+                                    lc.Type = static_cast<LightType>(lType);
+                                }
                                 float c[3] = { lc.Color.x, lc.Color.y, lc.Color.z };
                                 if (ImGui::ColorEdit3("Light Color", c))
                                 {
@@ -1503,6 +1611,11 @@ namespace RL
                                 }
                                 ImGui::SliderFloat("Intensity", &lc.Intensity, 0.1f, 50.0f);
                                 ImGui::SliderFloat("Range", &lc.Range, 1.0f, 100.0f);
+                                if (lc.Type == LightType::Spot)
+                                {
+                                    ImGui::SliderFloat("Spot Angle", &lc.SpotAngle, 1.0f, 179.0f);
+                                }
+                                ImGui::Checkbox("Cast Shadows", &lc.CastShadows);
                             }
                         }
 
@@ -1521,7 +1634,7 @@ namespace RL
                             if (ImGui::CollapsingHeader("Rigid Body Component", ImGuiTreeNodeFlags_DefaultOpen))
                             {
                                 auto& rb = scene.GetComponent<RigidBodyComponent>(m_selectedEntity);
-                                const char* bodyTypes[] = { "Static", "Kinematic", "Dynamic" };
+                                const char* bodyTypes[] = { "Static", "Dynamic", "Kinematic" };
                                 int bType = static_cast<int>(rb.Type);
                                 if (ImGui::Combo("Body Type", &bType, bodyTypes, IM_ARRAYSIZE(bodyTypes)))
                                 {
@@ -1558,6 +1671,118 @@ namespace RL
                                 ImGui::DragFloat("Radius", &sc.Radius, 0.05f, 0.01f, 100.0f);
                                 ImGui::DragFloat3("Offset##Sphere", &sc.Offset.x, 0.05f);
                                 ImGui::Checkbox("Is Trigger##Sphere", &sc.IsTrigger);
+                            }
+                        }
+
+                        if (scene.HasComponent<DistanceJointComponent>(m_selectedEntity))
+                        {
+                            if (ImGui::CollapsingHeader("Distance Joint Component", ImGuiTreeNodeFlags_DefaultOpen))
+                            {
+                                auto& dj = scene.GetComponent<DistanceJointComponent>(m_selectedEntity);
+                                DrawTargetEntityCombo(scene, "Target##DJ", m_selectedEntity, dj.TargetEntity);
+                                ImGui::DragFloat3("Anchor A##DJ", &dj.AnchorA.x, 0.05f);
+                                ImGui::DragFloat3("Anchor B##DJ", &dj.AnchorB.x, 0.05f);
+                                ImGui::Checkbox("Auto Distance##DJ", &dj.AutoDistance);
+                                ImGui::DragFloat("Target Distance##DJ", &dj.TargetDistance, 0.05f, 0.0f, 1000.0f);
+                                ImGui::SliderFloat("Stiffness##DJ", &dj.Stiffness, 0.0f, 1.0f);
+                                ImGui::SliderFloat("Damping##DJ", &dj.Damping, 0.0f, 1.0f);
+                            }
+                        }
+
+                        if (scene.HasComponent<HingeJointComponent>(m_selectedEntity))
+                        {
+                            if (ImGui::CollapsingHeader("Hinge Joint Component", ImGuiTreeNodeFlags_DefaultOpen))
+                            {
+                                auto& hj = scene.GetComponent<HingeJointComponent>(m_selectedEntity);
+                                DrawTargetEntityCombo(scene, "Target##HJ", m_selectedEntity, hj.TargetEntity);
+                                ImGui::DragFloat3("Anchor##HJ", &hj.Anchor.x, 0.05f);
+                                ImGui::DragFloat3("Axis##HJ", &hj.Axis.x, 0.05f);
+                                ImGui::Checkbox("Enable Limits##HJ", &hj.EnableLimits);
+                                if (hj.EnableLimits)
+                                {
+                                    ImGui::SliderAngle("Lower Limit##HJ", &hj.LowerAngleLimit, -180.0f, 180.0f);
+                                    ImGui::SliderAngle("Upper Limit##HJ", &hj.UpperAngleLimit, -180.0f, 180.0f);
+                                }
+                                ImGui::Checkbox("Enable Motor##HJ", &hj.EnableMotor);
+                                if (hj.EnableMotor)
+                                {
+                                    ImGui::DragFloat("Motor Speed##HJ", &hj.MotorSpeed, 0.1f, -50.0f, 50.0f);
+                                    ImGui::DragFloat("Max Torque##HJ", &hj.MaxMotorTorque, 0.5f, 0.0f, 1000.0f);
+                                }
+                            }
+                        }
+
+                        if (scene.HasComponent<FixedJointComponent>(m_selectedEntity))
+                        {
+                            if (ImGui::CollapsingHeader("Fixed Joint Component", ImGuiTreeNodeFlags_DefaultOpen))
+                            {
+                                auto& fj = scene.GetComponent<FixedJointComponent>(m_selectedEntity);
+                                DrawTargetEntityCombo(scene, "Target##FJ", m_selectedEntity, fj.TargetEntity);
+                                ImGui::DragFloat3("Relative Offset##FJ", &fj.RelativeOffset.x, 0.05f);
+                                ImGui::DragFloat3("Relative Rotation##FJ", &fj.RelativeRotation.x, 0.05f);
+                                ImGui::DragFloat("Break Force##FJ", &fj.BreakForce, 0.5f, 0.0f, 10000.0f);
+                                ImGui::Checkbox("Is Broken##FJ", &fj.IsBroken);
+                            }
+                        }
+
+                        if (scene.HasComponent<AudioSourceComponent>(m_selectedEntity))
+                        {
+                            if (ImGui::CollapsingHeader("Audio Source Component", ImGuiTreeNodeFlags_DefaultOpen))
+                            {
+                                auto& as = scene.GetComponent<AudioSourceComponent>(m_selectedEntity);
+                                char soundBuf[256]{};
+                                std::copy_n(as.SoundPath.c_str(), (std::min)(sizeof(soundBuf) - 1, as.SoundPath.size()), soundBuf);
+                                if (ImGui::InputText("Sound Path##AS", soundBuf, sizeof(soundBuf)))
+                                {
+                                    as.SoundPath = soundBuf;
+                                }
+                                ImGui::SliderFloat("Volume##AS", &as.Volume, 0.0f, 2.0f);
+                                ImGui::SliderFloat("Pitch##AS", &as.Pitch, 0.1f, 3.0f);
+                                ImGui::DragFloat("Min Distance##AS", &as.MinDistance, 0.1f, 0.01f, 1000.0f);
+                                ImGui::DragFloat("Max Distance##AS", &as.MaxDistance, 0.5f, 0.1f, 5000.0f);
+                                ImGui::Checkbox("Is 3D##AS", &as.Is3D);
+                                ImGui::Checkbox("Loop##AS", &as.Loop);
+                                ImGui::Checkbox("Play On Start##AS", &as.PlayOnStart);
+                                ImGui::Text("Playing: %s", as.IsPlaying ? "True" : "False");
+                            }
+                        }
+
+                        if (scene.HasComponent<AudioListenerComponent>(m_selectedEntity))
+                        {
+                            if (ImGui::CollapsingHeader("Audio Listener Component", ImGuiTreeNodeFlags_DefaultOpen))
+                            {
+                                auto& al = scene.GetComponent<AudioListenerComponent>(m_selectedEntity);
+                                ImGui::Checkbox("Is Active##AL", &al.IsActive);
+                            }
+                        }
+
+                        if (scene.HasComponent<SkinnedMeshComponent>(m_selectedEntity))
+                        {
+                            if (ImGui::CollapsingHeader("Skinned Mesh Component", ImGuiTreeNodeFlags_DefaultOpen))
+                            {
+                                auto& sk = scene.GetComponent<SkinnedMeshComponent>(m_selectedEntity);
+                                char modelBuf[256]{};
+                                std::copy_n(sk.ModelPath.c_str(), (std::min)(sizeof(modelBuf) - 1, sk.ModelPath.size()), modelBuf);
+                                if (ImGui::InputText("Model Path##SK", modelBuf, sizeof(modelBuf)))
+                                {
+                                    sk.ModelPath = modelBuf;
+                                }
+                                char skelBuf[128]{};
+                                std::copy_n(sk.SkeletonName.c_str(), (std::min)(sizeof(skelBuf) - 1, sk.SkeletonName.size()), skelBuf);
+                                if (ImGui::InputText("Skeleton##SK", skelBuf, sizeof(skelBuf)))
+                                {
+                                    sk.SkeletonName = skelBuf;
+                                }
+                                char animBuf[128]{};
+                                std::copy_n(sk.CurrentAnimation.c_str(), (std::min)(sizeof(animBuf) - 1, sk.CurrentAnimation.size()), animBuf);
+                                if (ImGui::InputText("Animation##SK", animBuf, sizeof(animBuf)))
+                                {
+                                    sk.CurrentAnimation = animBuf;
+                                }
+                                ImGui::DragFloat("Anim Speed##SK", &sk.AnimationSpeed, 0.05f, 0.0f, 10.0f);
+                                ImGui::Checkbox("Playing##SK", &sk.IsPlaying);
+                                ImGui::Checkbox("Visible##SK", &sk.IsVisible);
+                                ImGui::Text("Bone Palette Size: %zu", sk.BonePalette.size());
                             }
                         }
 
@@ -1911,6 +2136,15 @@ namespace RL
                     m_selectedEntity = e;
                     m_openAddPopup = false;
                 }
+                if (ImGui::MenuItem("Spot Light"))
+                {
+                    Entity e = scene.CreateEntity("SpotLight");
+                    auto& lc = scene.AddComponent<LightComponent>(e, LightType::Spot, XMFLOAT3{1.0f, 0.95f, 0.85f}, 10.0f, 15.0f);
+                    lc.SpotAngle = 45.0f;
+                    scene.GetComponent<TransformComponent>(e).Rotation.x = XMConvertToRadians(45.0f);
+                    m_selectedEntity = e;
+                    m_openAddPopup = false;
+                }
                 ImGui::EndMenu();
             }
 
@@ -1956,6 +2190,38 @@ namespace RL
                     auto& t = scene.GetComponent<TransformComponent>(e);
                     t.Position.y = 7.0f;
                     m_selectedEntity = e;
+                    m_openAddPopup = false;
+                }
+                if (ImGui::MenuItem("Hinged Door (Two-Body)"))
+                {
+                    Entity frame = scene.CreateEntity("DoorFrame");
+                    scene.AddComponent<MeshComponent>(frame, "Cube");
+                    auto& frameT = scene.GetComponent<TransformComponent>(frame);
+                    frameT.Position = { -0.7f, 1.0f, 0.0f };
+                    frameT.Scale = { 0.2f, 2.0f, 0.2f };
+                    auto& frameRb = scene.AddComponent<RigidBodyComponent>(frame);
+                    frameRb.Type = BodyType::Static;
+                    auto& frameBc = scene.AddComponent<BoxColliderComponent>(frame);
+                    frameBc.HalfSize = { 0.5f, 0.5f, 0.5f };
+
+                    Entity door = scene.CreateEntity("DoorLeaf");
+                    scene.AddComponent<MeshComponent>(door, "Cube");
+                    auto& doorT = scene.GetComponent<TransformComponent>(door);
+                    doorT.Position = { 0.0f, 1.0f, 0.0f };
+                    doorT.Scale = { 1.2f, 2.0f, 0.1f };
+                    auto& doorRb = scene.AddComponent<RigidBodyComponent>(door);
+                    doorRb.Type = BodyType::Dynamic;
+                    doorRb.Mass = 5.0f;
+                    auto& doorBc = scene.AddComponent<BoxColliderComponent>(door);
+                    doorBc.HalfSize = { 0.5f, 0.5f, 0.5f };
+                    auto& hj = scene.AddComponent<HingeJointComponent>(door);
+                    hj.TargetEntity = frame;
+                    hj.Anchor = { -0.5f, 0.0f, 0.0f };
+                    hj.Axis = { 0.0f, 1.0f, 0.0f };
+                    hj.EnableLimits = true;
+                    hj.LowerAngleLimit = -1.5707963f;
+                    hj.UpperAngleLimit = 1.5707963f;
+                    m_selectedEntity = door;
                     m_openAddPopup = false;
                 }
                 ImGui::EndMenu();
@@ -2065,7 +2331,9 @@ namespace RL
             }
         }
 
-        if (!io.KeyCtrl && !io.KeyAlt && !io.KeyShift)
+        const bool mouseNavigating = m_cameraNavigating || ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+
+        if (!io.KeyCtrl && !io.KeyAlt && !io.KeyShift && !mouseNavigating)
         {
             if (ImGui::IsKeyPressed(ImGuiKey_G, false)) { m_activeTool = BlenderTool::Move; }
             if (ImGui::IsKeyPressed(ImGuiKey_R, false)) { m_activeTool = BlenderTool::Rotate; }
@@ -2111,15 +2379,18 @@ namespace RL
             auto& cam = scene.GetCamera();
             if (ImGui::IsKeyPressed(ImGuiKey_Keypad1, false))
             {
-                cam.SetPosition(DirectX::XMFLOAT3(0.0f, 0.0f, -10.0f));
+                cam.SetPosition(DirectX::XMFLOAT3(0.0f, 0.0f, -m_orbitDistance));
+                cam.SetRotation(DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f));
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Keypad3, false))
             {
-                cam.SetPosition(DirectX::XMFLOAT3(10.0f, 0.0f, -10.0f));
+                cam.SetPosition(DirectX::XMFLOAT3(m_orbitDistance, 0.0f, 0.0f));
+                cam.SetRotation(DirectX::XMFLOAT3(0.0f, -90.0f, 0.0f));
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Keypad7, false))
             {
-                cam.SetPosition(DirectX::XMFLOAT3(0.0f, 10.0f, -10.0f));
+                cam.SetPosition(DirectX::XMFLOAT3(0.0f, m_orbitDistance, 0.0f));
+                cam.SetRotation(DirectX::XMFLOAT3(89.0f, 0.0f, 0.0f));
             }
 
             if (ImGui::IsKeyPressed(ImGuiKey_Keypad5, false))
@@ -2133,7 +2404,17 @@ namespace RL
                 if (m_selectedEntity.IsValid() && scene.HasComponent<TransformComponent>(m_selectedEntity))
                 {
                     const auto& t = scene.GetComponent<TransformComponent>(m_selectedEntity);
-                    cam.SetPosition(DirectX::XMFLOAT3(t.Position.x, t.Position.y, t.Position.z - 5.0f));
+                    const auto rot = cam.GetRotation();
+                    const XMMATRIX rMat = XMMatrixRotationRollPitchYaw(
+                        XMConvertToRadians(rot.x),
+                        XMConvertToRadians(rot.y),
+                        XMConvertToRadians(rot.z));
+                    XMFLOAT3 fwd;
+                    XMStoreFloat3(&fwd, XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rMat));
+                    cam.SetPosition(DirectX::XMFLOAT3(
+                        t.Position.x - fwd.x * m_orbitDistance,
+                        t.Position.y - fwd.y * m_orbitDistance,
+                        t.Position.z - fwd.z * m_orbitDistance));
                 }
             }
         }
@@ -2221,6 +2502,195 @@ namespace RL
         return changed;
     }
 
+    void SceneBuilder::HandleViewportCameraNavigation(Scene& scene, const Timer& timer, bool viewportHovered)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        auto& cam = scene.GetCamera();
+
+        const bool middleDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+        const bool rightDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+
+        if (viewportHovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
+        {
+            m_cameraNavigating = true;
+        }
+        if (!middleDown && !rightDown)
+        {
+            m_cameraNavigating = false;
+        }
+
+        auto ComputeBasis = [](const XMFLOAT3& rotDeg, XMFLOAT3& outRight, XMFLOAT3& outUp, XMFLOAT3& outFwd) {
+            const XMMATRIX rotMat = XMMatrixRotationRollPitchYaw(
+                XMConvertToRadians(rotDeg.x),
+                XMConvertToRadians(rotDeg.y),
+                XMConvertToRadians(rotDeg.z));
+            XMStoreFloat3(&outRight, XMVector3TransformNormal(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), rotMat));
+            XMStoreFloat3(&outUp, XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), rotMat));
+            XMStoreFloat3(&outFwd, XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rotMat));
+        };
+
+        if (viewportHovered && std::abs(io.MouseWheel) > 0.0f)
+        {
+            if (cam.GetProjectionType() == CameraProjection::Perspective)
+            {
+                XMFLOAT3 right, up, fwd;
+                ComputeBasis(cam.GetRotation(), right, up, fwd);
+                const float step = io.MouseWheel * (std::max)(0.5f, m_orbitDistance * 0.12f);
+                XMFLOAT3 pos = cam.GetPosition();
+                pos.x += fwd.x * step;
+                pos.y += fwd.y * step;
+                pos.z += fwd.z * step;
+                cam.SetPosition(pos);
+                m_orbitDistance = std::clamp(m_orbitDistance - step, 0.5f, 500.0f);
+            }
+            else
+            {
+                const float newZoom = cam.GetZoom() * std::pow(1.15f, io.MouseWheel);
+                cam.SetZoom(std::clamp(newZoom, 0.05f, 50.0f));
+            }
+        }
+
+        if (!m_cameraNavigating && !viewportHovered)
+        {
+            return;
+        }
+
+        if (middleDown && (m_cameraNavigating || viewportHovered))
+        {
+            const ImVec2 delta = io.MouseDelta;
+            if (io.KeyShift || io.KeyAlt)
+            {
+                XMFLOAT3 right, up, fwd;
+                ComputeBasis(cam.GetRotation(), right, up, fwd);
+                const float panSpeed = 0.0018f * (std::max)(1.0f, m_orbitDistance);
+                XMFLOAT3 pos = cam.GetPosition();
+                pos.x += (-right.x * delta.x + up.x * delta.y) * panSpeed;
+                pos.y += (-right.y * delta.x + up.y * delta.y) * panSpeed;
+                pos.z += (-right.z * delta.x + up.z * delta.y) * panSpeed;
+                cam.SetPosition(pos);
+            }
+            else
+            {
+                XMFLOAT3 right, up, fwd;
+                XMFLOAT3 rot = cam.GetRotation();
+                ComputeBasis(rot, right, up, fwd);
+
+                const XMFLOAT3 oldPos = cam.GetPosition();
+                const XMFLOAT3 pivot{
+                    oldPos.x + fwd.x * m_orbitDistance,
+                    oldPos.y + fwd.y * m_orbitDistance,
+                    oldPos.z + fwd.z * m_orbitDistance
+                };
+
+                constexpr float orbitSens = 0.25f;
+                rot.y += delta.x * orbitSens;
+                rot.x = std::clamp(rot.x + delta.y * orbitSens, -89.0f, 89.0f);
+                cam.SetRotation(rot);
+
+                ComputeBasis(rot, right, up, fwd);
+                cam.SetPosition(XMFLOAT3(
+                    pivot.x - fwd.x * m_orbitDistance,
+                    pivot.y - fwd.y * m_orbitDistance,
+                    pivot.z - fwd.z * m_orbitDistance));
+            }
+        }
+        else if (rightDown && (m_cameraNavigating || viewportHovered))
+        {
+            const ImVec2 delta = io.MouseDelta;
+            XMFLOAT3 rot = cam.GetRotation();
+            constexpr float lookSens = 0.20f;
+            rot.y += delta.x * lookSens;
+            rot.x = std::clamp(rot.x + delta.y * lookSens, -89.0f, 89.0f);
+            cam.SetRotation(rot);
+
+            if (!io.WantTextInput)
+            {
+                XMFLOAT3 right, up, fwd;
+                ComputeBasis(rot, right, up, fwd);
+
+                const float dt = (std::max)(timer.GetDeltaTime(), 0.0001f);
+                const float moveSpeed = (io.KeyShift ? 18.0f : 6.0f) * dt;
+                XMFLOAT3 pos = cam.GetPosition();
+
+                if (ImGui::IsKeyDown(ImGuiKey_W))
+                {
+                    pos.x += fwd.x * moveSpeed;
+                    pos.y += fwd.y * moveSpeed;
+                    pos.z += fwd.z * moveSpeed;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_S))
+                {
+                    pos.x -= fwd.x * moveSpeed;
+                    pos.y -= fwd.y * moveSpeed;
+                    pos.z -= fwd.z * moveSpeed;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_D))
+                {
+                    pos.x += right.x * moveSpeed;
+                    pos.y += right.y * moveSpeed;
+                    pos.z += right.z * moveSpeed;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_A))
+                {
+                    pos.x -= right.x * moveSpeed;
+                    pos.y -= right.y * moveSpeed;
+                    pos.z -= right.z * moveSpeed;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_E))
+                {
+                    pos.y += moveSpeed;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_Q))
+                {
+                    pos.y -= moveSpeed;
+                }
+                cam.SetPosition(pos);
+            }
+        }
+    }
+
+    bool SceneBuilder::DrawTargetEntityCombo(Scene& scene, const char* label, Entity owner, Entity& target)
+    {
+        bool changed = false;
+        std::string preview = "None";
+        if (target.IsValid() && scene.IsAlive(target))
+        {
+            std::string tName = scene.HasComponent<TagComponent>(target)
+                ? scene.GetComponent<TagComponent>(target).Tag
+                : "Entity";
+            preview = std::format("{} (#{})", tName, target.GetIndex());
+        }
+
+        if (ImGui::BeginCombo(label, preview.c_str()))
+        {
+            if (ImGui::Selectable("None", !target.IsValid()))
+            {
+                target = Entity{};
+                changed = true;
+            }
+            for (Entity candidate : scene.GetAliveEntities())
+            {
+                if (!scene.IsAlive(candidate) || candidate == owner) continue;
+                std::string cName = scene.HasComponent<TagComponent>(candidate)
+                    ? scene.GetComponent<TagComponent>(candidate).Tag
+                    : "Entity";
+                const std::string itemLabel = std::format("{} (#{})##{}", cName, candidate.GetIndex(), candidate.GetID());
+                const bool isSelected = (target == candidate);
+                if (ImGui::Selectable(itemLabel.c_str(), isSelected))
+                {
+                    target = candidate;
+                    changed = true;
+                }
+                if (isSelected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        return changed;
+    }
+
     Entity SceneBuilder::PickEntityAtScreenPos(
         Scene& scene,
         const ImVec2& screenPos,
@@ -2276,7 +2746,105 @@ namespace RL
             return hit->HitEntity;
         }
 
-        return Entity{};
+        Entity bestEntity{};
+        float bestDist = 1000.0f;
+        const XMVECTOR rayOrigV = XMLoadFloat3(&rayOrigin);
+        const XMVECTOR rayDirV = XMLoadFloat3(&rayDir);
+
+        for (Entity e : scene.GetAliveEntities())
+        {
+            if (!scene.IsAlive(e) || !scene.HasComponent<TransformComponent>(e)) continue;
+
+            XMFLOAT3 bMin{ -0.5f, -0.5f, -0.5f };
+            XMFLOAT3 bMax{  0.5f,  0.5f,  0.5f };
+            bool pickable = false;
+
+            if (const auto* mc = scene.TryGetComponent<MeshComponent>(e))
+            {
+                if (mc->IsVisible)
+                {
+                    pickable = true;
+                    if (mc->MeshRef)
+                    {
+                        bMin = mc->MeshRef->GetBoundsMin();
+                        bMax = mc->MeshRef->GetBoundsMax();
+                    }
+                }
+            }
+            if (!pickable)
+            {
+                if (const auto* qr = scene.TryGetComponent<QuadRenderComponent>(e))
+                {
+                    if (qr->IsVisible)
+                    {
+                        pickable = true;
+                    }
+                }
+            }
+            if (!pickable && scene.HasComponent<LightComponent>(e))
+            {
+                pickable = true;
+            }
+
+            if (!pickable) continue;
+
+            const XMMATRIX worldMat = scene.GetWorldMatrix(e);
+            XMVECTOR wDet;
+            const XMMATRIX invWorld = XMMatrixInverse(&wDet, worldMat);
+            if (std::abs(XMVectorGetX(wDet)) < 1e-8f) continue;
+
+            XMFLOAT3 localOrigin;
+            XMFLOAT3 localDir;
+            XMStoreFloat3(&localOrigin, XMVector3TransformCoord(rayOrigV, invWorld));
+            XMStoreFloat3(&localDir, XMVector3TransformNormal(rayDirV, invWorld));
+
+            const float origArr[3] = { localOrigin.x, localOrigin.y, localOrigin.z };
+            const float dirArr[3] = { localDir.x, localDir.y, localDir.z };
+            const float minArr[3] = { bMin.x, bMin.y, bMin.z };
+            const float maxArr[3] = { bMax.x, bMax.y, bMax.z };
+
+            float tMin = 0.0f;
+            float tMax = bestDist;
+            bool missed = false;
+
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                if (std::abs(dirArr[axis]) < 1e-8f)
+                {
+                    if (origArr[axis] < minArr[axis] || origArr[axis] > maxArr[axis])
+                    {
+                        missed = true;
+                        break;
+                    }
+                }
+                else
+                {
+                    const float invD = 1.0f / dirArr[axis];
+                    float t1 = (minArr[axis] - origArr[axis]) * invD;
+                    float t2 = (maxArr[axis] - origArr[axis]) * invD;
+                    if (t1 > t2) std::swap(t1, t2);
+                    tMin = (std::max)(tMin, t1);
+                    tMax = (std::min)(tMax, t2);
+                    if (tMin > tMax)
+                    {
+                        missed = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!missed && tMax >= 0.0f)
+            {
+                const float hitDist = (tMin > 0.0f) ? tMin : tMax;
+                if (hitDist >= 0.0f && hitDist < bestDist)
+                {
+                    bestDist = hitDist;
+                    bestEntity = e;
+                }
+            }
+        }
+
+        return bestEntity;
     }
 
     bool SceneBuilder::SaveScene(const Scene& scene, const std::filesystem::path& path)
@@ -2287,6 +2855,16 @@ namespace RL
     bool SceneBuilder::LoadScene(Scene& scene, ID3D12Device* device, const std::filesystem::path& path)
     {
         m_selectedEntity = Entity{};
-        return SceneSerializer::Load(scene, device, path);
+        const bool ok = SceneSerializer::Load(scene, device, path);
+        if (ok)
+        {
+            const auto& env = scene.GetEnvironment();
+            m_worldSkyColor = env.SkyColor;
+            m_ambientStrength = env.AmbientStrength;
+            m_enableFog = env.FogEnabled;
+            m_fogDensity = env.FogDensity;
+            m_shadingMode = static_cast<ViewportShadingMode>(scene.GetShadingMode());
+        }
+        return ok;
     }
 }

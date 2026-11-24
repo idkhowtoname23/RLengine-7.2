@@ -19,6 +19,9 @@
 
 #include <filesystem>
 #include <format>
+#include <unordered_map>
+#include <algorithm>
+#include <cstring>
 
 namespace RL
 {
@@ -371,6 +374,8 @@ namespace RL
             }
         }
 
+        std::unordered_map<const cgltf_node*, i32> globalNodeToBoneIndex;
+
         for (cgltf_size s = 0; s < data->skins_count; ++s)
         {
             const cgltf_skin& gltfSkin = data->skins[s];
@@ -378,6 +383,21 @@ namespace RL
             skeleton.Name = gltfSkin.name ? gltfSkin.name : std::format("{}_Skin{}", modelData.Name, s);
             skeleton.Bones.resize(gltfSkin.joints_count);
             skeleton.SkinMatrices.resize(gltfSkin.joints_count);
+
+            std::unordered_map<const cgltf_node*, i32> skinNodeToBoneIndex;
+            skinNodeToBoneIndex.reserve(gltfSkin.joints_count);
+            for (cgltf_size j = 0; j < gltfSkin.joints_count; ++j)
+            {
+                if (gltfSkin.joints[j])
+                {
+                    const i32 boneIdx = static_cast<i32>(j);
+                    skinNodeToBoneIndex[gltfSkin.joints[j]] = boneIdx;
+                    if (s == 0)
+                    {
+                        globalNodeToBoneIndex[gltfSkin.joints[j]] = boneIdx;
+                    }
+                }
+            }
 
             std::vector<float> ibm(gltfSkin.joints_count * 16, 0.0f);
             if (gltfSkin.inverse_bind_matrices)
@@ -392,7 +412,22 @@ namespace RL
             {
                 const cgltf_node* jointNode = gltfSkin.joints[j];
                 BoneInfo& bone = skeleton.Bones[j];
-                bone.Name = jointNode->name ? jointNode->name : std::format("Bone_{}", j);
+                bone.Name = (jointNode && jointNode->name) ? jointNode->name : std::format("Bone_{}", j);
+
+                i32 parentIndex = -1;
+                const cgltf_node* parentNode = jointNode ? jointNode->parent : nullptr;
+                while (parentNode)
+                {
+                    const auto it = skinNodeToBoneIndex.find(parentNode);
+                    if (it != skinNodeToBoneIndex.end())
+                    {
+                        parentIndex = it->second;
+                        break;
+                    }
+                    parentNode = parentNode->parent;
+                }
+                bone.ParentIndex = parentIndex;
+
                 if (gltfSkin.inverse_bind_matrices)
                 {
                     std::memcpy(&bone.InverseBindMatrix, &ibm[j * 16], sizeof(DirectX::XMFLOAT4X4));
@@ -401,7 +436,18 @@ namespace RL
                 {
                     DirectX::XMStoreFloat4x4(&bone.InverseBindMatrix, DirectX::XMMatrixIdentity());
                 }
-                DirectX::XMStoreFloat4x4(&bone.LocalTransform, DirectX::XMMatrixIdentity());
+
+                if (jointNode)
+                {
+                    float localMat[16]{};
+                    cgltf_node_transform_local(jointNode, localMat);
+                    std::memcpy(&bone.LocalTransform, localMat, sizeof(DirectX::XMFLOAT4X4));
+                }
+                else
+                {
+                    DirectX::XMStoreFloat4x4(&bone.LocalTransform, DirectX::XMMatrixIdentity());
+                }
+
                 DirectX::XMStoreFloat4x4(&bone.FinalMatrix, DirectX::XMMatrixIdentity());
                 skeleton.SkinMatrices[j] = bone.FinalMatrix;
             }
@@ -413,28 +459,112 @@ namespace RL
             const cgltf_animation& gltfAnim = data->animations[a];
             AnimationClip clip;
             clip.Name = gltfAnim.name ? gltfAnim.name : std::format("Anim_{}", a);
+
+            std::unordered_map<const cgltf_node*, usize> nodeToTrackIndex;
+
             for (cgltf_size c = 0; c < gltfAnim.channels_count; ++c)
             {
                 const cgltf_animation_channel& ch = gltfAnim.channels[c];
-                AnimationTrack track;
-                if (ch.target_node && ch.target_node->name)
+                if (!ch.target_node || !ch.sampler || !ch.sampler->input || !ch.sampler->output)
                 {
-                    track.BoneName = ch.target_node->name;
+                    continue;
                 }
-                if (ch.sampler && ch.sampler->input)
+
+                if (ch.target_path != cgltf_animation_path_type_translation &&
+                    ch.target_path != cgltf_animation_path_type_rotation &&
+                    ch.target_path != cgltf_animation_path_type_scale)
                 {
-                    const cgltf_size keyCount = ch.sampler->input->count;
-                    track.Timestamps.resize(keyCount);
-                    for (cgltf_size k = 0; k < keyCount; ++k)
+                    continue;
+                }
+
+                usize trackIdx = 0;
+                if (const auto it = nodeToTrackIndex.find(ch.target_node); it != nodeToTrackIndex.end())
+                {
+                    trackIdx = it->second;
+                }
+                else
+                {
+                    AnimationTrack newTrack;
+                    if (const auto boneIt = globalNodeToBoneIndex.find(ch.target_node); boneIt != globalNodeToBoneIndex.end())
                     {
-                        cgltf_accessor_read_float(ch.sampler->input, k, &track.Timestamps[k], 1);
-                        if (track.Timestamps[k] > clip.Duration)
-                        {
-                            clip.Duration = track.Timestamps[k];
-                        }
+                        newTrack.BoneIndex = boneIt->second;
+                    }
+                    if (ch.target_node->name)
+                    {
+                        newTrack.BoneName = ch.target_node->name;
+                    }
+                    else if (newTrack.BoneIndex >= 0)
+                    {
+                        newTrack.BoneName = std::format("Bone_{}", newTrack.BoneIndex);
+                    }
+                    trackIdx = clip.Tracks.size();
+                    nodeToTrackIndex[ch.target_node] = trackIdx;
+                    clip.Tracks.push_back(std::move(newTrack));
+                }
+
+                AnimationTrack& track = clip.Tracks[trackIdx];
+                const cgltf_size inputCount = ch.sampler->input->count;
+                const cgltf_size outputCount = ch.sampler->output->count;
+                const bool isCubic = (ch.sampler->interpolation == cgltf_interpolation_type_cubic_spline);
+                const cgltf_size maxKeysFromOutput = isCubic ? (outputCount / 3) : outputCount;
+                const cgltf_size keyCount = (std::min)(inputCount, maxKeysFromOutput);
+
+                if (keyCount == 0)
+                {
+                    continue;
+                }
+
+                std::vector<f32> timestamps(keyCount);
+                for (cgltf_size k = 0; k < keyCount; ++k)
+                {
+                    cgltf_accessor_read_float(ch.sampler->input, k, &timestamps[k], 1);
+                    if (timestamps[k] > clip.Duration)
+                    {
+                        clip.Duration = timestamps[k];
                     }
                 }
-                clip.Tracks.push_back(std::move(track));
+
+                if (track.Timestamps.empty())
+                {
+                    track.Timestamps = timestamps;
+                }
+
+                if (ch.target_path == cgltf_animation_path_type_translation)
+                {
+                    track.PositionTimestamps = std::move(timestamps);
+                    track.Positions.resize(keyCount);
+                    for (cgltf_size k = 0; k < keyCount; ++k)
+                    {
+                        const cgltf_size outIdx = isCubic ? (k * 3 + 1) : k;
+                        float val[3]{ 0.0f, 0.0f, 0.0f };
+                        cgltf_accessor_read_float(ch.sampler->output, outIdx, val, 3);
+                        track.Positions[k] = { val[0], val[1], val[2] };
+                    }
+                }
+                else if (ch.target_path == cgltf_animation_path_type_rotation)
+                {
+                    track.RotationTimestamps = std::move(timestamps);
+                    track.Rotations.resize(keyCount);
+                    for (cgltf_size k = 0; k < keyCount; ++k)
+                    {
+                        const cgltf_size outIdx = isCubic ? (k * 3 + 1) : k;
+                        float val[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+                        cgltf_accessor_read_float(ch.sampler->output, outIdx, val, 4);
+                        track.Rotations[k] = { val[0], val[1], val[2], val[3] };
+                    }
+                }
+                else if (ch.target_path == cgltf_animation_path_type_scale)
+                {
+                    track.ScaleTimestamps = std::move(timestamps);
+                    track.Scales.resize(keyCount);
+                    for (cgltf_size k = 0; k < keyCount; ++k)
+                    {
+                        const cgltf_size outIdx = isCubic ? (k * 3 + 1) : k;
+                        float val[3]{ 1.0f, 1.0f, 1.0f };
+                        cgltf_accessor_read_float(ch.sampler->output, outIdx, val, 3);
+                        track.Scales[k] = { val[0], val[1], val[2] };
+                    }
+                }
             }
             modelData.Animations.push_back(std::move(clip));
         }

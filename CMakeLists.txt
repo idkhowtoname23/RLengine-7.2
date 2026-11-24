@@ -105,6 +105,7 @@ set(PLATFORM_SOURCES
 set(ASSETS_SOURCES
     source/Assets/AssetHandle.hpp
     source/Assets/AssetManager.hpp
+    source/Assets/AssetImporters.hpp
 )
 
 set(GRAPHICS_SOURCES
@@ -154,6 +155,8 @@ set(SCENE_SOURCES
     source/Scene/Systems/RenderSystem.cpp
     source/Scene/Systems/PhysicsSystem.hpp
     source/Scene/Systems/PhysicsSystem.cpp
+    source/Scene/Systems/AnimationSystem.hpp
+    source/Scene/Systems/AnimationSystem.cpp
 )
 
 set(SCRIPTING_SOURCES

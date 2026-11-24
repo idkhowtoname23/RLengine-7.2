@@ -41,6 +41,7 @@ namespace RL
         Mesh* MeshPtr = nullptr;
         u32 StartInstance = 0;
         u32 Count = 0;
+        bool Wireframe = false;
     };
 
     class RenderSystem
@@ -49,6 +50,8 @@ namespace RL
         static constexpr u32 InitialInstanceCapacity = 16384;
         static constexpr u32 ConstantBufferStride = 1024;
         static constexpr u32 FrameCount = NUM_FRAMES;
+        static constexpr u32 MaxDynamicLights = 16;
+        static constexpr u32 MaxBoneCount = 128;
 
         RenderSystem() = default;
         ~RenderSystem();
@@ -138,6 +141,7 @@ namespace RL
         GPUBuffer m_cascadeConstantBuffers[FrameCount][ShadowMap::CascadeCount];
         GPUBuffer m_pointShadowConstantBuffers[NUM_FRAMES];
         GPUBuffer m_boneBuffers[NUM_FRAMES];
+        GPUBuffer m_lightBuffers[NUM_FRAMES];
         GPUBuffer m_instanceBuffers[NUM_FRAMES];
         GPUBuffer m_frameConstantBuffers[NUM_FRAMES];
         usize m_trackedInstanceMemory = 0;
@@ -157,6 +161,7 @@ namespace RL
         Memory::FrameAllocator m_transientAllocator{ 32 * 1024 * 1024 };
 
         Pipeline m_meshPipeline;
+        Pipeline m_wireframePipeline;
         Pipeline m_gridPipeline;
         Pipeline m_shadowPipeline;
         std::unique_ptr<ShadowMap> m_shadowMap;

@@ -18,6 +18,8 @@ cbuffer PassCB : register(b0)
     float4             CascadeSplits;
     float4             CascadeSrvIndices;
     float4             CascadeParams;
+    float4             FogColorDensity;
+    float4             EnvParams;
 };
 
 cbuffer DrawCB : register(b1)
@@ -37,7 +39,16 @@ struct InstanceData
     uint               EmissiveIndex;
 };
 
+struct DynamicLightData
+{
+    float4 PositionRange;
+    float4 ColorIntensity;
+    float4 DirectionType;
+    float4 SpotParams;
+};
+
 StructuredBuffer<InstanceData> g_Instances : register(t0, space1);
+StructuredBuffer<DynamicLightData> g_DynamicLights : register(t1, space1);
 StructuredBuffer<row_major float4x4> g_Bones : register(t0, space2);
 
 Texture2D   g_Textures[] : register(t0);
@@ -262,6 +273,37 @@ float CalculatePointShadow(float3 worldPos, float3 normal, float3 lightDir)
 
 float4 PSMain(VSOutput input) : SV_Target
 {
+    uint shadingMode = (uint)(EnvParams.z + 0.5f);
+    float ambientStrength = max(EnvParams.y, 0.0f);
+
+    if (shadingMode == 0)
+    {
+        float4 wireBase = input.Color * ColorMultiplier;
+        return float4(saturate(wireBase.rgb), wireBase.a);
+    }
+
+    float3 N = normalize(input.Normal);
+    float3 V = normalize(CameraPos.xyz - input.WorldPos);
+    float3 L_sun = normalize(SunDirection.xyz);
+
+    if (shadingMode == 1)
+    {
+        float4 solidBase = input.Color * ColorMultiplier;
+        float3 solidAlbedo = pow(max(solidBase.rgb, 0.0f), 2.2f);
+        float ndotl = max(dot(N, L_sun), 0.0f);
+        float hemi = 0.5f + 0.5f * N.y;
+        float rim = 0.12f * max(dot(N, V), 0.0f);
+        float3 solidAmbient = AmbientColor.rgb * ambientStrength * (0.65f + 0.35f * hemi);
+        float3 solidDirect = SunColor.rgb * max(SunDirection.w, 0.5f) * 0.35f * ndotl;
+        float3 solidColor = solidAlbedo * (solidAmbient + solidDirect + rim);
+        if (PBRParams.w > 0.5f)
+        {
+            solidColor = ACESFilm(solidColor);
+        }
+        solidColor = pow(max(solidColor, 0.0f), 1.0f / 2.2f);
+        return float4(solidColor, solidBase.a);
+    }
+
     float4 texColor = g_Textures[NonUniformResourceIndex(input.TextureIndex)].Sample(g_Sampler, input.UV);
     float4 base = texColor * input.Color * ColorMultiplier;
     float3 albedo = pow(max(base.rgb, 0.0f), 2.2f);
@@ -284,30 +326,29 @@ float4 PSMain(VSOutput input) : SV_Target
         metallic = clamp(mrSample.b, 0.02f, 0.98f);
     }
 
-    float3 T = normalize(input.Tangent.xyz);
-    float3 N = normalize(input.Normal);
-    T = normalize(T - dot(T, N) * N);
-    float3 B = cross(N, T) * input.Tangent.w;
-    float3x3 TBN = float3x3(T, B, N);
-
     if (input.NormalMapIndex > 0)
     {
-        float3 normalSample = g_Textures[NonUniformResourceIndex(input.NormalMapIndex)].Sample(g_Sampler, input.UV).xyz * 2.0f - 1.0f;
-        N = normalize(mul(normalSample, TBN));
+        float3 tOrtho = input.Tangent.xyz - dot(input.Tangent.xyz, N) * N;
+        if (dot(tOrtho, tOrtho) > 1e-6f)
+        {
+            float3 T = normalize(tOrtho);
+            float3 B = cross(N, T) * input.Tangent.w;
+            float3x3 TBN = float3x3(T, B, N);
+            float3 normalSample = g_Textures[NonUniformResourceIndex(input.NormalMapIndex)].Sample(g_Sampler, input.UV).xyz * 2.0f - 1.0f;
+            N = normalize(mul(normalSample, TBN));
+        }
     }
 
-    float3 V = normalize(CameraPos.xyz - input.WorldPos);
     float NdotV = max(dot(N, V), 0.0001f);
 
     float3 F0 = lerp(float3(0.04f, 0.04f, 0.04f), albedo, metallic);
     float3 Lo = float3(0.0f, 0.0f, 0.0f);
 
-    float3 L_sun = normalize(SunDirection.xyz);
     float3 H_sun = normalize(V + L_sun);
     float NdotL_sun = max(dot(N, L_sun), 0.0f);
     if (NdotL_sun > 0.0f)
     {
-        float shadow = CalculateDirectionalShadow(input.WorldPos, N, L_sun, input.Position.w);
+        float shadow = (shadingMode >= 3) ? CalculateDirectionalShadow(input.WorldPos, N, L_sun, input.Position.w) : 1.0f;
         if (shadow > 0.001f)
         {
             float NDF = DistributionGGX(N, H_sun, roughness);
@@ -326,44 +367,75 @@ float4 PSMain(VSOutput input) : SV_Target
         }
     }
 
-    float3 pointToLight = PointLightPos.xyz - input.WorldPos;
-    float dist = length(pointToLight);
-    float range = max(PointLightPos.w, 0.01f);
-    if (dist < range)
+    uint lightCount = min((uint)(EnvParams.w + 0.5f), 16u);
+    for (uint i = 0; i < lightCount; ++i)
     {
-        float3 L_pt = normalize(pointToLight);
-        float3 H_pt = normalize(V + L_pt);
-        float NdotL_pt = max(dot(N, L_pt), 0.0f);
-        if (NdotL_pt > 0.0f)
+        DynamicLightData light = g_DynamicLights[i];
+        float3 lightVec = light.PositionRange.xyz - input.WorldPos;
+        float dist = length(lightVec);
+        float range = max(light.PositionRange.w, 0.01f);
+        if (dist < range)
         {
-            float ptShadow = CalculatePointShadow(input.WorldPos, N, L_pt);
-            if (ptShadow > 0.001f)
+            float3 L = lightVec / max(dist, 1e-5f);
+            float spotFactor = 1.0f;
+            if (light.DirectionType.w > 1.5f)
             {
-                float attenuation = pow(saturate(1.0f - (dist / range)), 2.0f) / (1.0f + 0.1f * dist * dist);
-                float NDF = DistributionGGX(N, H_pt, roughness);
-                float G = GeometrySmith(N, V, L_pt, roughness);
-                float3 F = FresnelSchlick(max(dot(H_pt, V), 0.0f), F0);
+                float3 spotDir = normalize(light.DirectionType.xyz);
+                float theta = dot(-L, spotDir);
+                float innerCos = light.SpotParams.x;
+                float outerCos = light.SpotParams.y;
+                spotFactor = smoothstep(outerCos, max(innerCos, outerCos + 1e-4f), theta);
+            }
 
-                float3 numerator = NDF * G * F;
-                float denominator = 4.0f * NdotV * NdotL_pt + 0.0001f;
-                float3 specular = numerator / denominator;
+            if (spotFactor > 0.001f)
+            {
+                float3 H = normalize(V + L);
+                float NdotL = max(dot(N, L), 0.0f);
+                if (NdotL > 0.0f)
+                {
+                    float lightShadow = 1.0f;
+                    if (shadingMode >= 3 && light.DirectionType.w < 0.5f && light.SpotParams.w > 0.5f)
+                    {
+                        lightShadow = CalculatePointShadow(input.WorldPos, N, L);
+                    }
+                    if (lightShadow > 0.001f)
+                    {
+                        float attenuation = pow(saturate(1.0f - (dist / range)), 2.0f) / (1.0f + 0.1f * dist * dist);
+                        float NDF = DistributionGGX(N, H, roughness);
+                        float G = GeometrySmith(N, V, L, roughness);
+                        float3 F = FresnelSchlick(max(dot(H, V), 0.0f), F0);
 
-                float3 kS = F;
-                float3 kD = (float3(1.0f, 1.0f, 1.0f) - kS) * (1.0f - metallic);
-                float3 radiance = PointLightColor.rgb * PointLightColor.w * attenuation;
+                        float3 numerator = NDF * G * F;
+                        float denominator = 4.0f * NdotV * NdotL + 0.0001f;
+                        float3 specular = numerator / denominator;
 
-                Lo += (kD * albedo / PI + specular) * radiance * NdotL_pt * ptShadow;
+                        float3 kS = F;
+                        float3 kD = (float3(1.0f, 1.0f, 1.0f) - kS) * (1.0f - metallic);
+                        float3 radiance = light.ColorIntensity.rgb * light.ColorIntensity.w * attenuation * spotFactor;
+
+                        Lo += (kD * albedo / PI + specular) * radiance * NdotL * lightShadow;
+                    }
+                }
             }
         }
     }
 
-    float3 ambient = AmbientColor.rgb * albedo * ao;
+    float3 ambient = AmbientColor.rgb * ambientStrength * albedo * ao;
     float3 color = ambient + Lo;
 
     if (input.EmissiveIndex > 0)
     {
         float3 emissiveSample = g_Textures[NonUniformResourceIndex(input.EmissiveIndex)].Sample(g_Sampler, input.UV).rgb;
         color += emissiveSample;
+    }
+
+    if (shadingMode >= 3 && EnvParams.x > 0.5f)
+    {
+        float fogDist = length(CameraPos.xyz - input.WorldPos);
+        float fogDensity = max(FogColorDensity.w, 0.0f);
+        float fogFactor = saturate(1.0f - exp(-pow(fogDist * fogDensity, 2.0f)));
+        float3 fogColorLinear = pow(max(FogColorDensity.rgb, 0.0f), 2.2f);
+        color = lerp(color, fogColorLinear, fogFactor);
     }
 
     if (PBRParams.w > 0.5f)

@@ -44,6 +44,9 @@ namespace RL
         std::string BoneName;
         i32 BoneIndex = -1;
         std::vector<f32> Timestamps;
+        std::vector<f32> PositionTimestamps;
+        std::vector<f32> RotationTimestamps;
+        std::vector<f32> ScaleTimestamps;
         std::vector<DirectX::XMFLOAT3> Positions;
         std::vector<DirectX::XMFLOAT4> Rotations;
         std::vector<DirectX::XMFLOAT3> Scales;

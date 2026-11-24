@@ -126,6 +126,9 @@ namespace RL::Editor
         std::optional<AudioSourceComponent> AudioSource;
         std::optional<AudioListenerComponent> AudioListener;
         std::optional<ScriptComponent> Script;
+        std::optional<DistanceJointComponent> DistanceJoint;
+        std::optional<HingeJointComponent> HingeJoint;
+        std::optional<FixedJointComponent> FixedJoint;
 
         Entity ParentEntity{};
         std::vector<EntitySnapshot> ChildrenSnapshots;
@@ -203,6 +206,18 @@ namespace RL::Editor
             {
                 snap.Script = scene->GetComponent<ScriptComponent>(ent);
             }
+            if (scene->HasComponent<DistanceJointComponent>(ent))
+            {
+                snap.DistanceJoint = scene->GetComponent<DistanceJointComponent>(ent);
+            }
+            if (scene->HasComponent<HingeJointComponent>(ent))
+            {
+                snap.HingeJoint = scene->GetComponent<HingeJointComponent>(ent);
+            }
+            if (scene->HasComponent<FixedJointComponent>(ent))
+            {
+                snap.FixedJoint = scene->GetComponent<FixedJointComponent>(ent);
+            }
 
             snap.ParentEntity = scene->GetParent(ent);
 
@@ -246,6 +261,9 @@ namespace RL::Editor
             RestoreComponent(scene, newEnt, AudioSource);
             RestoreComponent(scene, newEnt, AudioListener);
             RestoreComponent(scene, newEnt, Script);
+            RestoreComponent(scene, newEnt, DistanceJoint);
+            RestoreComponent(scene, newEnt, HingeJoint);
+            RestoreComponent(scene, newEnt, FixedJoint);
 
             if (parentOverride.IsValid() && scene->IsValid(parentOverride))
             {

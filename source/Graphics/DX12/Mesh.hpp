@@ -80,11 +80,21 @@ namespace RL
         [[nodiscard]] std::string_view GetName() const noexcept { return m_name; }
         void SetName(std::string_view name) { m_name = name; }
 
+        [[nodiscard]] const std::vector<MeshVertex>& GetCpuVertices() const noexcept { return m_cpuVertices; }
+        [[nodiscard]] const std::vector<u32>& GetCpuIndices() const noexcept { return m_cpuIndices; }
+        [[nodiscard]] const DirectX::XMFLOAT3& GetBoundsMin() const noexcept { return m_boundsMin; }
+        [[nodiscard]] const DirectX::XMFLOAT3& GetBoundsMax() const noexcept { return m_boundsMax; }
+
     private:
         GPUBuffer m_vertexBuffer;
         GPUBuffer m_indexBuffer;
         D3D12_VERTEX_BUFFER_VIEW m_vbView{};
         D3D12_INDEX_BUFFER_VIEW m_ibView{};
+
+        std::vector<MeshVertex> m_cpuVertices;
+        std::vector<u32> m_cpuIndices;
+        DirectX::XMFLOAT3 m_boundsMin{ -0.5f, -0.5f, -0.5f };
+        DirectX::XMFLOAT3 m_boundsMax{  0.5f,  0.5f,  0.5f };
 
         u32 m_vertexCount = 0;
         u32 m_indexCount = 0;
