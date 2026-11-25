@@ -128,6 +128,116 @@ namespace RL
             DirectX::XMStoreFloat4x4(&identity, DirectX::XMMatrixIdentity());
             std::fill(palette.begin(), palette.end(), identity);
         }
+
+        struct BoneTRS
+        {
+            DirectX::XMVECTOR Scale;
+            DirectX::XMVECTOR Rotation;
+            DirectX::XMVECTOR Translation;
+        };
+
+        [[nodiscard]] const AnimationClip* FindClip(const ModelRig& rig, std::string_view name) noexcept
+        {
+            if (name.empty())
+            {
+                return nullptr;
+            }
+            for (const auto& clip : rig.Clips)
+            {
+                if (clip.Name == name)
+                {
+                    return &clip;
+                }
+            }
+            return nullptr;
+        }
+
+        [[nodiscard]] f32 NormalizeClipTime(f32 time, const AnimationClip* clip, bool loop) noexcept
+        {
+            if (clip && clip->Duration > 0.0f)
+            {
+                if (loop)
+                {
+                    f32 wrapped = std::fmod(time, clip->Duration);
+                    if (wrapped < 0.0f)
+                    {
+                        wrapped += clip->Duration;
+                    }
+                    return wrapped;
+                }
+                return std::clamp(time, 0.0f, clip->Duration);
+            }
+            return (time < 0.0f) ? 0.0f : time;
+        }
+
+        void MapClipTracks(
+            const AnimationClip* clip,
+            const Skeleton& skeleton,
+            std::vector<const AnimationTrack*>& outTracks)
+        {
+            const usize boneCount = skeleton.Bones.size();
+            outTracks.assign(boneCount, nullptr);
+            if (!clip)
+            {
+                return;
+            }
+            for (const auto& track : clip->Tracks)
+            {
+                if (track.BoneIndex >= 0 && static_cast<usize>(track.BoneIndex) < boneCount)
+                {
+                    outTracks[static_cast<usize>(track.BoneIndex)] = &track;
+                }
+                else if (!track.BoneName.empty())
+                {
+                    for (usize b = 0; b < boneCount; ++b)
+                    {
+                        if (skeleton.Bones[b].Name == track.BoneName)
+                        {
+                            outTracks[b] = &track;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        [[nodiscard]] bool HasTrackKeyframes(const AnimationTrack* track) noexcept
+        {
+            return track && (!track->Positions.empty() || !track->Rotations.empty() || !track->Scales.empty());
+        }
+
+        [[nodiscard]] BoneTRS SampleBoneTRS(
+            const AnimationTrack* track,
+            f32 time,
+            const DirectX::XMVECTOR& restScale,
+            const DirectX::XMVECTOR& restRot,
+            const DirectX::XMVECTOR& restTrans) noexcept
+        {
+            if (!HasTrackKeyframes(track))
+            {
+                return { restScale, DirectX::XMQuaternionNormalize(restRot), restTrans };
+            }
+
+            const DirectX::XMVECTOR scale = SampleVec3(
+                track->Scales,
+                SelectTimestamps(track->ScaleTimestamps, track->Timestamps),
+                time,
+                restScale);
+
+            const DirectX::XMVECTOR rot = SampleQuat(
+                track->Rotations,
+                SelectTimestamps(track->RotationTimestamps, track->Timestamps),
+                time,
+                restRot);
+
+            const DirectX::XMVECTOR trans = SampleVec3(
+                track->Positions,
+                SelectTimestamps(track->PositionTimestamps, track->Timestamps),
+                time,
+                restTrans);
+
+            return { scale, rot, trans };
+        }
     }
 
     void AnimationSystem::RegisterModelRig(
@@ -188,33 +298,39 @@ namespace RL
         skeleton.Bones.push_back(std::move(childBone));
         skeleton.UpdatePalette();
 
-        AnimationClip clip;
-        clip.Name = "TestAnim";
-        clip.Duration = 1.0f;
+        AnimationClip idleClip;
+        idleClip.Name = "Idle";
+        idleClip.Duration = 2.0f;
 
-        AnimationTrack rootTrack;
-        rootTrack.BoneName = "Root";
-        rootTrack.BoneIndex = 0;
-        rootTrack.PositionTimestamps = { 0.0f, 1.0f };
-        rootTrack.Positions = {
-            { 0.0f, 0.0f, 0.0f },
-            { 0.0f, 2.0f, 0.0f }
-        };
+        AnimationTrack idleArmTrack;
+        idleArmTrack.BoneName = "Arm";
+        idleArmTrack.BoneIndex = 1;
+        idleArmTrack.RotationTimestamps = { 0.0f, 1.0f, 2.0f };
+        DirectX::XMFLOAT4 qIdleZero{};
+        DirectX::XMFLOAT4 qIdlePeak{};
+        DirectX::XMStoreFloat4(&qIdleZero, DirectX::XMQuaternionIdentity());
+        DirectX::XMStoreFloat4(
+            &qIdlePeak,
+            DirectX::XMQuaternionRotationRollPitchYaw(0.0f, 0.0f, DirectX::XMConvertToRadians(15.0f)));
+        idleArmTrack.Rotations = { qIdleZero, qIdlePeak, qIdleZero };
+        idleClip.Tracks.push_back(std::move(idleArmTrack));
 
-        AnimationTrack childTrack;
-        childTrack.BoneName = "Arm";
-        childTrack.BoneIndex = 1;
-        childTrack.RotationTimestamps = { 0.0f, 1.0f };
-        DirectX::XMFLOAT4 qStart{};
-        DirectX::XMFLOAT4 qEnd{};
-        DirectX::XMStoreFloat4(&qStart, DirectX::XMQuaternionIdentity());
-        DirectX::XMStoreFloat4(&qEnd, DirectX::XMQuaternionRotationRollPitchYaw(0.0f, 0.0f, DirectX::XM_PIDIV2));
-        childTrack.Rotations = { qStart, qEnd };
+        AnimationClip waveClip;
+        waveClip.Name = "Wave";
+        waveClip.Duration = 1.0f;
 
-        clip.Tracks.push_back(std::move(rootTrack));
-        clip.Tracks.push_back(std::move(childTrack));
+        AnimationTrack waveArmTrack;
+        waveArmTrack.BoneName = "Arm";
+        waveArmTrack.BoneIndex = 1;
+        waveArmTrack.RotationTimestamps = { 0.0f, 1.0f };
+        DirectX::XMFLOAT4 qWaveStart{};
+        DirectX::XMFLOAT4 qWaveEnd{};
+        DirectX::XMStoreFloat4(&qWaveStart, DirectX::XMQuaternionIdentity());
+        DirectX::XMStoreFloat4(&qWaveEnd, DirectX::XMQuaternionRotationRollPitchYaw(0.0f, 0.0f, DirectX::XM_PIDIV2));
+        waveArmTrack.Rotations = { qWaveStart, qWaveEnd };
+        waveClip.Tracks.push_back(std::move(waveArmTrack));
 
-        RegisterModelRig(key, { skeleton }, { clip });
+        RegisterModelRig(key, { skeleton }, { idleClip, waveClip });
     }
 
     void AnimationSystem::Update(Scene& scene, f32 dt)
@@ -260,58 +376,47 @@ namespace RL
                 continue;
             }
 
-            const AnimationClip* activeClip = nullptr;
-            if (!comp.CurrentAnimation.empty())
-            {
-                for (const auto& clip : rig->Clips)
-                {
-                    if (clip.Name == comp.CurrentAnimation)
-                    {
-                        activeClip = &clip;
-                        break;
-                    }
-                }
-            }
+            const AnimationClip* activeClip = FindClip(*rig, comp.CurrentAnimation);
+            const AnimationClip* prevClip = (!comp.PreviousAnimation.empty() && comp.BlendDuration > 0.0f)
+                ? FindClip(*rig, comp.PreviousAnimation)
+                : nullptr;
 
             if (comp.IsPlaying)
             {
                 comp.AnimationTime += dt * comp.AnimationSpeed;
-            }
-
-            if (activeClip && activeClip->Duration > 0.0f)
-            {
-                comp.AnimationTime = std::fmod(comp.AnimationTime, activeClip->Duration);
-                if (comp.AnimationTime < 0.0f)
+                if (prevClip && comp.BlendDuration > 0.0f)
                 {
-                    comp.AnimationTime += activeClip->Duration;
-                }
-            }
-            else if (comp.AnimationTime < 0.0f)
-            {
-                comp.AnimationTime = 0.0f;
-            }
-
-            std::vector<const AnimationTrack*> boneTracks(boneCount, nullptr);
-            if (activeClip)
-            {
-                for (const auto& track : activeClip->Tracks)
-                {
-                    if (track.BoneIndex >= 0 && static_cast<usize>(track.BoneIndex) < boneCount)
+                    comp.PreviousAnimationTime += dt * comp.AnimationSpeed;
+                    comp.BlendTime += dt;
+                    if (comp.BlendTime >= comp.BlendDuration)
                     {
-                        boneTracks[static_cast<usize>(track.BoneIndex)] = &track;
-                    }
-                    else if (!track.BoneName.empty())
-                    {
-                        for (usize b = 0; b < boneCount; ++b)
-                        {
-                            if (targetSkeleton->Bones[b].Name == track.BoneName)
-                            {
-                                boneTracks[b] = &track;
-                                break;
-                            }
-                        }
+                        comp.PreviousAnimation.clear();
+                        comp.PreviousAnimationTime = 0.0f;
+                        comp.BlendTime = 0.0f;
+                        comp.BlendDuration = 0.0f;
+                        prevClip = nullptr;
                     }
                 }
+            }
+
+            comp.AnimationTime = NormalizeClipTime(comp.AnimationTime, activeClip, comp.Loop);
+            if (prevClip)
+            {
+                comp.PreviousAnimationTime = NormalizeClipTime(comp.PreviousAnimationTime, prevClip, comp.Loop);
+            }
+
+            const bool isBlending = (prevClip != nullptr && !comp.PreviousAnimation.empty() && comp.BlendDuration > 0.0f);
+            const f32 blendAlpha = isBlending
+                ? std::clamp(comp.BlendTime / comp.BlendDuration, 0.0f, 1.0f)
+                : 1.0f;
+
+            std::vector<const AnimationTrack*> boneTracks;
+            MapClipTracks(activeClip, *targetSkeleton, boneTracks);
+
+            std::vector<const AnimationTrack*> prevBoneTracks;
+            if (isBlending)
+            {
+                MapClipTracks(prevClip, *targetSkeleton, prevBoneTracks);
             }
 
             std::vector<DirectX::XMFLOAT4X4> localMatrices(boneCount);
@@ -319,7 +424,9 @@ namespace RL
             {
                 const DirectX::XMMATRIX restLocal = DirectX::XMLoadFloat4x4(&targetSkeleton->Bones[i].LocalTransform);
                 const AnimationTrack* track = boneTracks[i];
-                if (!track || (track->Positions.empty() && track->Rotations.empty() && track->Scales.empty()))
+                const AnimationTrack* prevTrack = isBlending ? prevBoneTracks[i] : nullptr;
+
+                if (!HasTrackKeyframes(track) && !HasTrackKeyframes(prevTrack))
                 {
                     DirectX::XMStoreFloat4x4(&localMatrices[i], restLocal);
                     continue;
@@ -335,28 +442,32 @@ namespace RL
                     restTrans = DirectX::XMVectorZero();
                 }
 
-                const DirectX::XMVECTOR scale = SampleVec3(
-                    track->Scales,
-                    SelectTimestamps(track->ScaleTimestamps, track->Timestamps),
-                    comp.AnimationTime,
-                    restScale);
+                BoneTRS finalTRS = SampleBoneTRS(track, comp.AnimationTime, restScale, restRot, restTrans);
+                if (isBlending)
+                {
+                    const BoneTRS prevTRS = SampleBoneTRS(
+                        prevTrack,
+                        comp.PreviousAnimationTime,
+                        restScale,
+                        restRot,
+                        restTrans);
 
-                const DirectX::XMVECTOR rot = SampleQuat(
-                    track->Rotations,
-                    SelectTimestamps(track->RotationTimestamps, track->Timestamps),
-                    comp.AnimationTime,
-                    restRot);
+                    finalTRS.Scale = DirectX::XMVectorLerp(prevTRS.Scale, finalTRS.Scale, blendAlpha);
+                    finalTRS.Translation = DirectX::XMVectorLerp(prevTRS.Translation, finalTRS.Translation, blendAlpha);
 
-                const DirectX::XMVECTOR trans = SampleVec3(
-                    track->Positions,
-                    SelectTimestamps(track->PositionTimestamps, track->Timestamps),
-                    comp.AnimationTime,
-                    restTrans);
+                    DirectX::XMVECTOR q0 = prevTRS.Rotation;
+                    DirectX::XMVECTOR q1 = finalTRS.Rotation;
+                    if (DirectX::XMVectorGetX(DirectX::XMQuaternionDot(q0, q1)) < 0.0f)
+                    {
+                        q1 = DirectX::XMVectorNegate(q1);
+                    }
+                    finalTRS.Rotation = DirectX::XMQuaternionNormalize(DirectX::XMQuaternionSlerp(q0, q1, blendAlpha));
+                }
 
                 const DirectX::XMMATRIX localMat =
-                    DirectX::XMMatrixScalingFromVector(scale) *
-                    DirectX::XMMatrixRotationQuaternion(rot) *
-                    DirectX::XMMatrixTranslationFromVector(trans);
+                    DirectX::XMMatrixScalingFromVector(finalTRS.Scale) *
+                    DirectX::XMMatrixRotationQuaternion(finalTRS.Rotation) *
+                    DirectX::XMMatrixTranslationFromVector(finalTRS.Translation);
 
                 DirectX::XMStoreFloat4x4(&localMatrices[i], localMat);
             }

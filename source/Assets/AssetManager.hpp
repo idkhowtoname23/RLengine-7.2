@@ -2,12 +2,16 @@
 
 #include "Assets/AssetHandle.hpp"
 #include "Core/Logger.hpp"
+#include "Core/Threading/ThreadPool.hpp"
 #include "Core/UUID.hpp"
 #include "Platform/FileSystem/VFS.hpp"
 #include "Platform/FileSystem/FileWatcher.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -383,6 +387,171 @@ namespace RL
             return AssetHandle<AssetT>(typed);
         }
 
+        template <typename T>
+        static void LoadAsync(std::string_view virtualPath,
+                              std::function<void(AssetHandle<T>)> onComplete)
+        {
+            {
+                bool needsDefaults = false;
+                {
+                    std::lock_guard lock(s_mutex);
+                    needsDefaults = !s_defaultsRegistered && s_importers.empty();
+                }
+                if (needsDefaults)
+                {
+                    RegisterDefaultImporters();
+                }
+            }
+
+            std::string normalizedPath(virtualPath);
+            std::replace(normalizedPath.begin(), normalizedPath.end(), '\\', '/');
+
+            {
+                std::lock_guard lock(s_mutex);
+                if (const auto it = s_cache.find(normalizedPath); it != s_cache.end())
+                {
+                    auto typed = std::dynamic_pointer_cast<T>(it->second);
+                    if (typed)
+                    {
+                        if (onComplete)
+                        {
+                            onComplete(AssetHandle<T>(typed));
+                        }
+                        return;
+                    }
+                }
+            }
+
+            s_pendingAsyncCount.fetch_add(1, std::memory_order_acq_rel);
+
+            auto callbackWrapper = [cb = std::move(onComplete)](std::shared_ptr<AssetBase> asset) {
+                if (!cb)
+                {
+                    return;
+                }
+                auto typed = std::dynamic_pointer_cast<T>(asset);
+                cb(typed ? AssetHandle<T>(typed) : AssetHandle<T>{});
+            };
+
+            GetThreadPool().Enqueue([normalizedPath = std::move(normalizedPath),
+                                     typeIdx = std::type_index(typeid(T)),
+                                     callbackWrapper = std::move(callbackWrapper)]() mutable {
+                const auto realPath = VFS::Resolve(normalizedPath);
+                if (!realPath)
+                {
+                    RL_LOG_ERROR("AssetManager::LoadAsync: cannot resolve '{}'", normalizedPath);
+                    {
+                        std::lock_guard lock(s_asyncMutex);
+                        s_asyncQueue.push_back(PendingAsyncLoad{
+                            std::move(normalizedPath),
+                            typeIdx,
+                            nullptr,
+                            std::move(callbackWrapper)
+                        });
+                    }
+                    s_asyncCv.notify_all();
+                    return;
+                }
+
+                IAssetImporter* importer = FindImporter(realPath->extension().string());
+                if (!importer)
+                {
+                    RL_LOG_ERROR("AssetManager::LoadAsync: no importer for '{}'", realPath->extension().string());
+                    {
+                        std::lock_guard lock(s_asyncMutex);
+                        s_asyncQueue.push_back(PendingAsyncLoad{
+                            std::move(normalizedPath),
+                            typeIdx,
+                            nullptr,
+                            std::move(callbackWrapper)
+                        });
+                    }
+                    s_asyncCv.notify_all();
+                    return;
+                }
+
+                std::shared_ptr<AssetBase> base = importer->Import(normalizedPath, *realPath);
+                if (!base)
+                {
+                    RL_LOG_ERROR("AssetManager::LoadAsync: import failed for '{}'", normalizedPath);
+                }
+                else
+                {
+                    base->uuid         = UUID::Generate();
+                    base->virtualPath  = normalizedPath;
+                    base->absolutePath = realPath->string();
+                    base->isLoaded     = true;
+                }
+
+                {
+                    std::lock_guard lock(s_asyncMutex);
+                    s_asyncQueue.push_back(PendingAsyncLoad{
+                        std::move(normalizedPath),
+                        typeIdx,
+                        std::move(base),
+                        std::move(callbackWrapper)
+                    });
+                }
+                s_asyncCv.notify_all();
+            });
+        }
+
+        static void PollAsyncLoads()
+        {
+            std::vector<PendingAsyncLoad> completed;
+            {
+                std::lock_guard lock(s_asyncMutex);
+                if (s_asyncQueue.empty())
+                {
+                    return;
+                }
+                completed.swap(s_asyncQueue);
+            }
+
+            for (auto& item : completed)
+            {
+                std::shared_ptr<AssetBase> finalAsset = item.loadedAsset;
+                if (finalAsset)
+                {
+                    std::lock_guard lock(s_mutex);
+                    if (const auto it = s_cache.find(item.normalizedPath); it != s_cache.end())
+                    {
+                        finalAsset = it->second;
+                    }
+                    else
+                    {
+                        s_cache[item.normalizedPath] = finalAsset;
+                        s_uuidIndex[finalAsset->uuid] = finalAsset;
+                    }
+                }
+
+                s_pendingAsyncCount.fetch_sub(1, std::memory_order_acq_rel);
+                s_asyncCv.notify_all();
+
+                if (item.callbackWrapper)
+                {
+                    item.callbackWrapper(finalAsset);
+                }
+            }
+        }
+
+        static void WaitAllAsync()
+        {
+            while (s_pendingAsyncCount.load(std::memory_order_acquire) > 0)
+            {
+                PollAsyncLoads();
+                if (s_pendingAsyncCount.load(std::memory_order_acquire) == 0)
+                {
+                    break;
+                }
+                std::unique_lock lock(s_asyncMutex);
+                s_asyncCv.wait_for(lock, std::chrono::milliseconds(1), []() {
+                    return !s_asyncQueue.empty() || s_pendingAsyncCount.load(std::memory_order_acquire) == 0;
+                });
+            }
+            PollAsyncLoads();
+        }
+
         static void Reload(std::string_view virtualPath)
         {
             {
@@ -419,6 +588,11 @@ namespace RL
 
         static void Shutdown()
         {
+            WaitAllAsync();
+            {
+                std::lock_guard lock(s_poolMutex);
+                s_threadPool.reset();
+            }
             {
                 std::lock_guard lock(s_mutex);
                 s_hotReloadEnabled = false;
@@ -447,7 +621,36 @@ namespace RL
             return s_cache.size();
         }
 
+        [[nodiscard]] static usize GetCachedAssetCount()
+        {
+            std::lock_guard lock(s_mutex);
+            return s_cache.size();
+        }
+
+        [[nodiscard]] static usize GetPendingAsyncCount() noexcept
+        {
+            return s_pendingAsyncCount.load(std::memory_order_acquire);
+        }
+
     private:
+        struct PendingAsyncLoad
+        {
+            std::string normalizedPath;
+            std::type_index typeIndex;
+            std::shared_ptr<AssetBase> loadedAsset;
+            std::function<void(std::shared_ptr<AssetBase>)> callbackWrapper;
+        };
+
+        static ThreadPool& GetThreadPool()
+        {
+            std::lock_guard lock(s_poolMutex);
+            if (!s_threadPool)
+            {
+                s_threadPool = std::make_unique<ThreadPool>(2);
+            }
+            return *s_threadPool;
+        }
+
         [[nodiscard]] static IAssetImporter* FindImporter(std::string_view ext)
         {
             std::lock_guard lock(s_mutex);
@@ -472,6 +675,13 @@ namespace RL
         inline static std::mutex                                                  s_pendingMutex;
         inline static std::vector<HotReloadCallback>                              s_reloadCallbacks;
         inline static std::mutex                                                  s_reloadMutex;
+
+        inline static std::unique_ptr<ThreadPool>                                 s_threadPool;
+        inline static std::mutex                                                  s_poolMutex;
+        inline static std::vector<PendingAsyncLoad>                               s_asyncQueue;
+        inline static std::mutex                                                  s_asyncMutex;
+        inline static std::condition_variable                                     s_asyncCv;
+        inline static std::atomic<usize>                                          s_pendingAsyncCount{ 0 };
     };
 }
 

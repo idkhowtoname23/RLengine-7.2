@@ -382,7 +382,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             Entity skelEnt = animTestScene.CreateEntity("SkelBot");
             auto& sk = animTestScene.AddComponent<SkinnedMeshComponent>(skelEnt);
             sk.ModelPath = "Alpha3TestRig";
-            sk.Play("TestAnim");
+            sk.Play("Wave");
             animTestScene.Update(0.25f);
 
             const auto& postSk = animTestScene.GetComponent<SkinnedMeshComponent>(skelEnt);
@@ -466,6 +466,111 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             }
 
             RL_LOG_INFO("Smoke test Alpha 3: AssetManager, AnimationSystem, Joints & WorldEnvironment serialization validated successfully.");
+
+            AssetManager::Clear();
+            bool asyncMeshLoaded = false;
+            AssetManager::LoadAsync<MeshAsset>("assets://models/cube.gltf", [&](AssetHandle<MeshAsset> h) {
+                asyncMeshLoaded = h.IsValid() && h.Get() && !h.Get()->vertices.empty();
+            });
+            AssetManager::WaitAllAsync();
+            if (!asyncMeshLoaded)
+            {
+                RL_LOG_FATAL("Alpha 4 AssetManager::LoadAsync<MeshAsset> validation failed");
+                return -100;
+            }
+
+            sk.Play("Idle");
+            animTestScene.Update(0.1f);
+            const f32 idleVal = animTestScene.GetComponent<SkinnedMeshComponent>(skelEnt).BonePalette[1]._11;
+            sk.CrossFade("Wave", 0.5f);
+            animTestScene.Update(0.25f);
+            const f32 blendVal = animTestScene.GetComponent<SkinnedMeshComponent>(skelEnt).BonePalette[1]._11;
+            if (std::abs(blendVal - idleVal) < 1e-4f)
+            {
+                RL_LOG_FATAL("Alpha 4 AnimationSystem CrossFade blending validation failed");
+                return -101;
+            }
+
+            Scene serV3;
+            serV3.GetEnvironment().PostProcessEnabled = true;
+            serV3.GetEnvironment().Exposure = 1.45f;
+            serV3.GetEnvironment().BloomThreshold = 0.85f;
+            serV3.GetEnvironment().BloomIntensity = 0.65f;
+            serV3.GetEnvironment().VignetteIntensity = 0.45f;
+            Entity v3Ent = serV3.CreateEntity("V3Actor");
+            auto& pe = serV3.AddComponent<ParticleEmitterComponent>(v3Ent);
+            pe.MaxParticles = 512;
+            pe.EmissionRate = 75.0f;
+            auto& as = serV3.AddComponent<AudioSourceComponent>(v3Ent);
+            as.SoundPath = "assets://audio/test.wav";
+            as.Volume = 0.75f;
+            serV3.AddComponent<AudioListenerComponent>(v3Ent).IsActive = true;
+            auto& v3Sk = serV3.AddComponent<SkinnedMeshComponent>(v3Ent);
+            v3Sk.ModelPath = "Alpha3TestRig";
+            v3Sk.CurrentAnimation = "Wave";
+            v3Sk.Loop = false;
+
+            const std::string v3J = (std::filesystem::temp_directory_path() / "rlengine_a4_v3.json").string();
+            const std::string v3B = (std::filesystem::temp_directory_path() / "rlengine_a4_v3.bin").string();
+            SceneSerializer::Save(serV3, v3J);
+            SceneSerializer::Save(serV3, v3B);
+            Scene loadV3J, loadV3B;
+            const bool okV3J = SceneSerializer::Load(loadV3J, nullptr, v3J);
+            const bool okV3B = SceneSerializer::Load(loadV3B, nullptr, v3B);
+            std::error_code a4Ec;
+            std::filesystem::remove(v3J, a4Ec);
+            std::filesystem::remove(v3B, a4Ec);
+            auto checkV3 = [](const Scene& s) -> bool {
+                const auto& env = s.GetEnvironment();
+                if (!env.PostProcessEnabled || std::abs(env.Exposure - 1.45f) > 1e-4f ||
+                    std::abs(env.BloomThreshold - 0.85f) > 1e-4f || std::abs(env.BloomIntensity - 0.65f) > 1e-4f ||
+                    std::abs(env.VignetteIntensity - 0.45f) > 1e-4f) return false;
+                const auto ents = s.GetAliveEntities();
+                if (ents.size() != 1) return false;
+                const auto* p = s.TryGetComponent<ParticleEmitterComponent>(ents[0]);
+                const auto* a = s.TryGetComponent<AudioSourceComponent>(ents[0]);
+                const auto* l = s.TryGetComponent<AudioListenerComponent>(ents[0]);
+                const auto* k = s.TryGetComponent<SkinnedMeshComponent>(ents[0]);
+                return p && p->MaxParticles == 512 && a && a->SoundPath == "assets://audio/test.wav" &&
+                       l && l->IsActive && k && k->CurrentAnimation == "Wave" && !k->Loop;
+            };
+            if (!okV3J || !okV3B || !checkV3(loadV3J) || !checkV3(loadV3B))
+            {
+                RL_LOG_FATAL("Alpha 4 Binary v3 / JSON serialization validation failed");
+                return -102;
+            }
+
+            {
+                const std::filesystem::path tmpLua = std::filesystem::temp_directory_path() / "rlengine_a4_entity.lua";
+                {
+                    std::ofstream ofs(tmpLua);
+                    ofs << "function OnStart(self)\n  self:SetPosition(1.0, 2.0, 3.0)\nend\n"
+                        << "function OnUpdate(self, dt)\n  local x, y, z = self:GetPosition()\n  self:SetPosition(x + 1.0, y, z)\nend\n";
+                }
+                Scene scScene;
+                Entity scEnt = scScene.CreateEntity("ScriptedBot");
+                auto& scComp = scScene.AddComponent<ScriptComponent>(scEnt);
+                scComp.ScriptPath = tmpLua.string();
+                scComp.Enabled = true;
+
+                ScriptEngine seTest;
+                if (const auto mainLua = VFS::Resolve("scripts://main.lua"); mainLua && seTest.Initialize(*mainLua, &scScene))
+                {
+                    seTest.StartEntityScripts(scScene);
+                    seTest.UpdateEntityScripts(scScene, 0.016f);
+                    seTest.StopEntityScripts();
+                    seTest.Shutdown();
+                }
+                std::filesystem::remove(tmpLua, a4Ec);
+                const auto& pos = scScene.GetComponent<TransformComponent>(scEnt).Position;
+                if (std::abs(pos.x - 2.0f) > 1e-4f || std::abs(pos.y - 2.0f) > 1e-4f)
+                {
+                    RL_LOG_FATAL("Alpha 4 ScriptComponent OnStart/OnUpdate validation failed ({}, {})", pos.x, pos.y);
+                    return -103;
+                }
+            }
+
+            RL_LOG_INFO("Smoke test Alpha 4: Async AssetManager, Animation CrossFade, Binary v3 & Entity ScriptComponent validated successfully.");
         }
     }
 
@@ -586,6 +691,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             Input::NewFrame();
             EventBus::DispatchDeferred();
             AssetManager::PollHotReload();
+            AssetManager::PollAsyncLoads();
             AudioEngine::Get().Update();
             if (!window.ProcessMessages() || window.ShouldClose()) break;
 
@@ -1392,6 +1498,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         }
         EventBus::DispatchDeferred();
         AssetManager::PollHotReload();
+        AssetManager::PollAsyncLoads();
         AudioEngine::Get().Update();
 
         if (!window.ProcessMessages() || window.ShouldClose())

@@ -3,6 +3,7 @@
 #include "Editor/UI/Panel.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/Components.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Core/Types.hpp"
 
 #include <imgui.h>
@@ -35,6 +36,12 @@ namespace RL::Editor
             if (!m_selected.has_value() || !m_scene)
             {
                 ImGui::TextDisabled("Select an entity in the Scene Hierarchy.");
+                if (m_scene)
+                {
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    DrawWorldEnvironmentSection();
+                }
                 return;
             }
 
@@ -82,6 +89,7 @@ namespace RL::Editor
             DrawFixedJointComponent(ent);
             DrawAudioSourceComponent(ent);
             DrawAudioListenerComponent(ent);
+            DrawSkinnedMeshComponent(ent);
             DrawScriptComponent(ent);
 
             ImGui::Spacing();
@@ -163,6 +171,11 @@ namespace RL::Editor
                 {
                     if (!m_scene->HasComponent<AudioListenerComponent>(ent))
                         m_scene->AddComponent<AudioListenerComponent>(ent);
+                }
+                if (ImGui::MenuItem("Skinned Mesh"))
+                {
+                    if (!m_scene->HasComponent<SkinnedMeshComponent>(ent))
+                        m_scene->AddComponent<SkinnedMeshComponent>(ent);
                 }
                 if (ImGui::MenuItem("Script"))
                 {
@@ -714,6 +727,87 @@ namespace RL::Editor
             ImGui::Spacing();
         }
 
+        void DrawSkinnedMeshComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<SkinnedMeshComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Skinned Mesh", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<SkinnedMeshComponent>(ent); return; }
+
+            auto& sk = m_scene->GetComponent<SkinnedMeshComponent>(ent);
+            ImGui::Spacing();
+
+            LabeledField("Model Path", 95.0f);
+            char modelBuf[256]{};
+            std::strncpy(modelBuf, sk.ModelPath.c_str(), sizeof(modelBuf) - 1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##sk_model", modelBuf, sizeof(modelBuf)))
+            {
+                sk.ModelPath = modelBuf;
+            }
+
+            LabeledField("Skeleton", 95.0f);
+            char skelBuf[128]{};
+            std::strncpy(skelBuf, sk.SkeletonName.c_str(), sizeof(skelBuf) - 1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##sk_skel", skelBuf, sizeof(skelBuf)))
+            {
+                sk.SkeletonName = skelBuf;
+            }
+
+            LabeledField("Animation", 95.0f);
+            char animBuf[128]{};
+            std::strncpy(animBuf, sk.CurrentAnimation.c_str(), sizeof(animBuf) - 1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##sk_anim", animBuf, sizeof(animBuf)))
+            {
+                sk.CurrentAnimation = animBuf;
+            }
+
+            LabeledField("Timeline", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##sk_time", &sk.AnimationTime, 0.0f, 10.0f, "%.2f s");
+
+            LabeledField("Speed", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##sk_speed", &sk.AnimationSpeed, 0.05f, 0.0f, 10.0f);
+
+            LabeledField("Loop", 95.0f);
+            ImGui::Checkbox("##sk_loop", &sk.Loop);
+
+            LabeledField("Playing", 95.0f);
+            ImGui::Checkbox("##sk_playing", &sk.IsPlaying);
+
+            LabeledField("Visible", 95.0f);
+            ImGui::Checkbox("##sk_visible", &sk.IsVisible);
+
+            ImGui::Separator();
+            LabeledField("CrossFade", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##sk_cf_target", m_crossFadeTarget, sizeof(m_crossFadeTarget));
+
+            LabeledField("Blend Dur", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##sk_cf_dur", &m_crossFadeDuration, 0.02f, 0.0f, 5.0f);
+
+            if (ImGui::Button("CrossFade##sk_cf_btn", { ImGui::GetContentRegionAvail().x, 0.0f }))
+            {
+                if (m_crossFadeTarget[0] != '\0')
+                {
+                    sk.CrossFade(m_crossFadeTarget, m_crossFadeDuration);
+                }
+            }
+
+            if (!sk.PreviousAnimation.empty())
+            {
+                ImGui::TextDisabled("Blending from '%s' (%.2f / %.2f)",
+                    sk.PreviousAnimation.c_str(), sk.BlendTime, sk.BlendDuration);
+            }
+            ImGui::TextDisabled("Bone Palette: %zu", sk.BonePalette.size());
+            ImGui::Spacing();
+        }
+
         void DrawScriptComponent(Entity ent)
         {
             if (!m_scene->HasComponent<ScriptComponent>(ent)) return;
@@ -725,19 +819,71 @@ namespace RL::Editor
             auto& sc = m_scene->GetComponent<ScriptComponent>(ent);
 
             ImGui::Spacing();
-            LabeledField("Script", 80.0f);
-            char scriptBuf[256];
+            LabeledField("Enabled", 90.0f);
+            ImGui::Checkbox("##script_enabled", &sc.Enabled);
+
+            LabeledField("Script Name", 90.0f);
+            char scriptBuf[256]{};
             std::strncpy(scriptBuf, sc.ScriptName.c_str(), sizeof(scriptBuf) - 1);
             ImGui::SetNextItemWidth(-1);
             if (ImGui::InputText("##script_name", scriptBuf, sizeof(scriptBuf)))
             {
                 sc.ScriptName = scriptBuf;
             }
+
+            LabeledField("Script Path", 90.0f);
+            char pathBuf[256]{};
+            std::strncpy(pathBuf, sc.ScriptPath.c_str(), sizeof(pathBuf) - 1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##script_path", pathBuf, sizeof(pathBuf)))
+            {
+                sc.ScriptPath = pathBuf;
+            }
+
+            if (ImGui::Button("Reload Script##script_reload", { ImGui::GetContentRegionAvail().x, 0.0f }))
+            {
+                if (auto* engine = ScriptEngine::GetActive())
+                {
+                    engine->ReloadEntityScript(ent, *m_scene);
+                }
+            }
+            ImGui::Spacing();
+        }
+
+        void DrawWorldEnvironmentSection()
+        {
+            if (!m_scene) return;
+            if (!ImGui::CollapsingHeader("World Environment (Post-Processing)", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+            auto& env = m_scene->GetEnvironment();
+            ImGui::Spacing();
+
+            LabeledField("Post-Process", 110.0f);
+            ImGui::Checkbox("##env_pp_enabled", &env.PostProcessEnabled);
+
+            LabeledField("Exposure", 110.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##env_exposure", &env.Exposure, 0.1f, 5.0f);
+
+            LabeledField("Bloom Thresh", 110.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##env_bloom_thresh", &env.BloomThreshold, 0.0f, 5.0f);
+
+            LabeledField("Bloom Int", 110.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##env_bloom_int", &env.BloomIntensity, 0.0f, 3.0f);
+
+            LabeledField("Vignette", 110.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##env_vignette", &env.VignetteIntensity, 0.0f, 1.0f);
+
             ImGui::Spacing();
         }
 
         Scene*                m_scene = nullptr;
         std::optional<Entity> m_selected;
+        char                  m_crossFadeTarget[128]{};
+        f32                   m_crossFadeDuration = 0.25f;
     };
 
 }

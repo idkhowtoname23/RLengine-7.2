@@ -1,6 +1,6 @@
-# RLengine 7.2 Alpha 3 (Pre-Release)
+# RLengine 7.2 Alpha 4 (Pre-Release)
 
-> **Release Stage**: 🧪 **Alpha (Alpha 3 - Pre-Release)**  
+> **Release Stage**: 🧪 **Alpha (Alpha 4 - Pre-Release)**  
 > **Build Target**: C++23 | Visual Studio 18 2026 / 2022 | DirectX 12 (FL 12_1) & DirectX 11 (FL 11_0)  
 > **Code Quality**: Strict Zero Comments Policy enforced across all source, header, shader, script, and build configuration files.
 
@@ -8,7 +8,7 @@
 
 ## 📌 Overview & Development Status
 
-**RLengine 7.2 Alpha 3** represents milestone 3 of the planned 5–7 alpha phases towards the final RLengine 7.2 release. Engineered to modern **C++23** standards, Alpha 3 builds on Alpha 2's physics constraints and live shader hot-reloading by adding **end-to-end skeletal animation & glTF skinning**, **multi-light DX12 shading (up to 16 dynamic Point/Spot lights + atmospheric fog + viewport shading modes)**, **DirectX 11 multi-mesh & environment parity**, **concrete `AssetManager` importers (`MeshAsset`, `TextureAsset`, `ScriptAsset`)**, **complete Joints & `WorldEnvironment` serialization/Undo**, and **Blender-style 3D viewport navigation**.
+**RLengine 7.2 Alpha 4** represents milestone 4 of the planned 5–7 alpha phases towards the final RLengine 7.2 release. Building on Alpha 3's skeletal animation, multi-light DX12 shading, and DX11 multi-mesh parity, Alpha 4 introduces **HDR offscreen post-processing (Bloom, Exposure, ACES, Vignette)**, **smooth animation cross-fade blending & timeline scrubbing**, **isolated per-entity `ScriptComponent` Lua 5.4 runtime (`OnStart`, `OnUpdate`, `OnCollision`, `OnTriggerEnter`)**, **thread-pool asynchronous asset streaming (`AssetManager::LoadAsync<T>`)**, and **Binary v3 / JSON serialization & Undo/Redo** for Particle, Audio, SkinnedMesh, and PostProcess state.
 
 All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (Shader Model 6.5 DXIL)** and **DirectX 11 (Shader Model 5.0 DXBC)** pipelines.
 
@@ -122,7 +122,7 @@ cmake --build build --config Release --parallel
 
 ## 📦 Pre-Release Archive Contents
 
-The pre-release binary archive (`RLengine-7.2-Alpha-3-Windows-x64.zip`) contains:
+The pre-release binary archive (`RLengine-7.2-Alpha-4-Windows-x64.zip`) contains:
 * `RLengine7.2.exe`: Optimized Release executable.
 * `dxcompiler.dll`, `dxil.dll`: Official Microsoft DirectX Shader Compiler runtime.
 * `shaders/`: DX12 and DX11 HLSL shaders (`mesh3d.hlsl`, `quad.hlsl`, `grid3d.hlsl`, `shadow_depth.hlsl`).

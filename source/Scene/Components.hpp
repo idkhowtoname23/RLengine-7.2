@@ -217,14 +217,43 @@ namespace RL
         std::string ModelPath = "";
         std::string SkeletonName = "";
         std::string CurrentAnimation = "";
+        std::string PreviousAnimation = "";
         f32 AnimationTime = 0.0f;
+        f32 PreviousAnimationTime = 0.0f;
         f32 AnimationSpeed = 1.0f;
+        f32 BlendTime = 0.0f;
+        f32 BlendDuration = 0.0f;
+        bool Loop = true;
         bool IsPlaying = true;
         bool IsVisible = true;
         std::vector<DirectX::XMFLOAT4X4> BonePalette;
 
         void Play(std::string_view animName)
         {
+            PreviousAnimation.clear();
+            PreviousAnimationTime = 0.0f;
+            BlendTime = 0.0f;
+            BlendDuration = 0.0f;
+            CurrentAnimation = animName;
+            AnimationTime = 0.0f;
+            IsPlaying = true;
+        }
+
+        void CrossFade(std::string_view animName, f32 duration)
+        {
+            if (CurrentAnimation == animName)
+            {
+                return;
+            }
+            if (duration <= 0.0001f || CurrentAnimation.empty())
+            {
+                Play(animName);
+                return;
+            }
+            PreviousAnimation = CurrentAnimation;
+            PreviousAnimationTime = AnimationTime;
+            BlendTime = 0.0f;
+            BlendDuration = duration;
             CurrentAnimation = animName;
             AnimationTime = 0.0f;
             IsPlaying = true;
@@ -235,6 +264,18 @@ namespace RL
             if (IsPlaying)
             {
                 AnimationTime += dt * AnimationSpeed;
+                if (BlendDuration > 0.0f)
+                {
+                    PreviousAnimationTime += dt * AnimationSpeed;
+                    BlendTime += dt;
+                    if (BlendTime >= BlendDuration)
+                    {
+                        PreviousAnimation.clear();
+                        PreviousAnimationTime = 0.0f;
+                        BlendTime = 0.0f;
+                        BlendDuration = 0.0f;
+                    }
+                }
             }
         }
     };

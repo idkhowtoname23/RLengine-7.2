@@ -30,6 +30,11 @@ namespace RL
         bool FogEnabled = false;
         f32 FogDensity = 0.02f;
         DirectX::XMFLOAT3 FogColor{ 0.15f, 0.18f, 0.24f };
+        bool PostProcessEnabled = true;
+        f32 Exposure = 1.0f;
+        f32 BloomThreshold = 1.15f;
+        f32 BloomIntensity = 0.35f;
+        f32 VignetteIntensity = 0.25f;
     };
 
     enum class SceneShadingMode : u8

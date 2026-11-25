@@ -87,11 +87,20 @@ namespace RL
             lua_pushcfunction(L, &LuaEntityBridge::Entity_PlayAnimation);
             lua_setfield(L, -2, "PlayAnimation");
 
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_CrossFadeAnimation);
+            lua_setfield(L, -2, "CrossFadeAnimation");
+
             lua_pushcfunction(L, &LuaEntityBridge::Entity_StopAnimation);
             lua_setfield(L, -2, "StopAnimation");
 
             lua_pushcfunction(L, &LuaEntityBridge::Entity_SetAnimationSpeed);
             lua_setfield(L, -2, "SetAnimationSpeed");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_SetAnimationTime);
+            lua_setfield(L, -2, "SetAnimationTime");
+
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_GetAnimationTime);
+            lua_setfield(L, -2, "GetAnimationTime");
 
             lua_pushcfunction(L, &LuaEntityBridge::Entity_IsAnimationPlaying);
             lua_setfield(L, -2, "IsAnimationPlaying");
@@ -751,6 +760,41 @@ namespace RL
         return 0;
     }
 
+    int LuaEntityBridge::Entity_CrossFadeAnimation(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const char* animName = luaL_optstring(L, 2, "");
+        const f32 duration = static_cast<f32>(luaL_optnumber(L, 3, 0.25));
+        const bool hasSpeedArg = (lua_gettop(L) >= 4 && !lua_isnil(L, 4));
+        const f32 speed = hasSpeedArg ? static_cast<f32>(luaL_checknumber(L, 4)) : 1.0f;
+
+        const Entity ent(ud->entityID);
+        auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(ent);
+        if (!skinned)
+        {
+            skinned = &s_scene->AddComponent<SkinnedMeshComponent>(ent);
+        }
+
+        if (skinned)
+        {
+            if (animName && std::strlen(animName) > 0)
+            {
+                skinned->CrossFade(animName, duration);
+            }
+            if (hasSpeedArg)
+            {
+                skinned->AnimationSpeed = speed;
+            }
+        }
+
+        return 0;
+    }
+
     int LuaEntityBridge::Entity_StopAnimation(lua_State* L)
     {
         auto* ud = CheckEntity(L, 1);
@@ -782,6 +826,37 @@ namespace RL
         }
 
         return 0;
+    }
+
+    int LuaEntityBridge::Entity_SetAnimationTime(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const f32 time = static_cast<f32>(luaL_checknumber(L, 2));
+        if (auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(Entity(ud->entityID)))
+        {
+            skinned->AnimationTime = time;
+        }
+
+        return 0;
+    }
+
+    int LuaEntityBridge::Entity_GetAnimationTime(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            lua_pushnumber(L, 0.0);
+            return 1;
+        }
+
+        const auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(Entity(ud->entityID));
+        lua_pushnumber(L, skinned ? static_cast<lua_Number>(skinned->AnimationTime) : 0.0);
+        return 1;
     }
 
     int LuaEntityBridge::Entity_IsAnimationPlaying(lua_State* L)

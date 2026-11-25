@@ -12,6 +12,7 @@
 
 #include <expected>
 #include <atomic>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -42,6 +43,16 @@ namespace RL
         u32 StartInstance = 0;
         u32 Count = 0;
         bool Wireframe = false;
+    };
+
+    struct PostProcessConstants
+    {
+        f32 Exposure = 1.0f;
+        f32 BloomThreshold = 1.15f;
+        f32 BloomIntensity = 0.35f;
+        f32 VignetteIntensity = 0.25f;
+        DirectX::XMFLOAT2 TexelSize{ 1.0f / 1280.0f, 1.0f / 720.0f };
+        DirectX::XMFLOAT2 Pad{ 0.0f, 0.0f };
     };
 
     class RenderSystem
@@ -93,6 +104,7 @@ namespace RL
             m_mainRtv = rtv;
             m_mainDsv = dsv;
         }
+        void OnResize(u32 width, u32 height);
         [[nodiscard]] ShadowMap* GetShadowMap() const noexcept { return m_shadowMap.get(); }
         [[nodiscard]] Memory::FrameAllocator& GetTransientAllocator() noexcept { return m_transientAllocator; }
 
@@ -120,6 +132,9 @@ namespace RL
             Scene& scene,
             InstanceData* mappedInstances,
             u32& renderedCount);
+        bool CreateHdrRenderTarget(u32 width, u32 height);
+        void DestroyHdrRenderTarget() noexcept;
+        [[nodiscard]] std::expected<void, std::string> CreatePostProcessPipeline(const std::filesystem::path& shaderPath);
 
         FrustumPlanes m_currentFrustum{};
         std::vector<MeshBatch> m_activeBatches;
@@ -164,7 +179,23 @@ namespace RL
         Pipeline m_wireframePipeline;
         Pipeline m_gridPipeline;
         Pipeline m_shadowPipeline;
+        Pipeline m_meshHdrPipeline;
+        Pipeline m_wireframeHdrPipeline;
+        Pipeline m_quadHdrPipeline;
+        Pipeline m_gridHdrPipeline;
         std::unique_ptr<ShadowMap> m_shadowMap;
+
+        ComPtr<ID3D12Resource> m_hdrTarget;
+        ComPtr<ID3D12DescriptorHeap> m_hdrRtvHeap;
+        D3D12_CPU_DESCRIPTOR_HANDLE m_hdrRtv{};
+        u32 m_hdrSrvIndex = 0xFFFFFFFF;
+        u32 m_hdrWidth = 0;
+        u32 m_hdrHeight = 0;
+        D3D12_RESOURCE_STATES m_hdrState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+        ComPtr<ID3D12RootSignature> m_postProcessRootSig;
+        ComPtr<ID3D12PipelineState> m_postProcessPipeline;
+        GPUBuffer m_postProcessConstantBuffers[NUM_FRAMES];
 
         D3D12_VIEWPORT m_viewport{};
         D3D12_RECT m_scissorRect{};

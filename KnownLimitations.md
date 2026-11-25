@@ -19,8 +19,8 @@ This document provides a transparent overview of deliberate architectural bounda
 ---
 
 ### 3. Skeletal Animation & Skinning Pipeline
-* **Implemented in 7.2 Alpha 3**: Full glTF skeletal hierarchy parsing (`GLTFLoader` parent index, rest transforms, TRS keyframe timestamps and outputs), forward kinematics interpolation (`AnimationSystem` with `XMVectorLerp` / `XMQuaternionSlerp`), `BonePalette` GPU upload (up to 128 bones per entity) bound to `mesh3d.hlsl`, and Lua OOP playback controls (`PlayAnimation`, `StopAnimation`, `SetAnimationSpeed`, `IsAnimationPlaying`).
-* **Planned for Future**: Cross-fade animation blending between two clips, IK foot/hand placement, and visual animation timeline keyframe scrubbing in the editor.
+* **Implemented in 7.2 Alpha 4**: Full glTF skeletal hierarchy parsing (`GLTFLoader`), forward kinematics interpolation (`AnimationSystem`), `BonePalette` GPU upload (up to 128 bones), **cross-fade animation blending (`CrossFade`)**, timeline scrubbing while paused, `Loop` control, and Lua OOP playback controls (`PlayAnimation`, `CrossFadeAnimation`, `StopAnimation`, `SetAnimationSpeed`, `SetAnimationTime`, `GetAnimationTime`).
+* **Planned for Future**: IK foot/hand placement and multi-track additive animation layers.
 
 ---
 
@@ -35,5 +35,5 @@ This document provides a transparent overview of deliberate architectural bounda
   * **Memory Telemetry (`MemoryStats`)**: Real-time Windows PSAPI process RAM and GPU/Lua telemetry.
   * **Unified `EventBus`**: Publish-subscribe messaging with deferred queueing and Lua callbacks protected by `DepthGuard`.
   * **Live Shader Hot-Reloading**: Background `FileWatcher` (Overlapped I/O) with atomic GPSO swapping.
-  * **Concrete `AssetManager` Importers (Alpha 3)**: Concrete `MeshAsset`, `TextureAsset`, and `ScriptAsset` importers (`AssetManager::RegisterDefaultImporters()`), plus thread-safe queued hot-reload notifications via `AssetManager::PollHotReload()`.
-* **Planned for Future**: Background asynchronous streaming thread pool integration for large textures/glTF scenes and dynamic hot-reloading for custom compute shaders.
+  * **Async `AssetManager` Streaming & Importers (Alpha 4)**: Concrete `MeshAsset`, `TextureAsset`, and `ScriptAsset` importers (`AssetManager::RegisterDefaultImporters()`), `ThreadPool`-backed `AssetManager::LoadAsync<T>()` + `PollAsyncLoads()`, and thread-safe queued hot-reload notifications via `AssetManager::PollHotReload()`.
+* **Planned for Future**: Dynamic hot-reloading for custom compute shaders.

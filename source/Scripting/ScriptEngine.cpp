@@ -2,12 +2,15 @@
 #include "Scripting/LuaEntityBridge.hpp"
 #include "Scripting/LuaInputBridge.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/Components.hpp"
+#include "Platform/FileSystem/VFS.hpp"
 #include "Core/Memory/MemoryStats.hpp"
 #include "Core/Events/EventBus.hpp"
 #include "Core/Events/CommonEvents.hpp"
 
 #include <lua.hpp>
 #include <format>
+#include <vector>
 
 namespace RL
 {
@@ -20,12 +23,17 @@ namespace RL
         , m_lastWriteTime(other.m_lastWriteTime)
         , m_reloadCheckTimer(other.m_reloadCheckTimer)
         , m_trackedScriptMemory(other.m_trackedScriptMemory)
+        , m_entityScripts(std::move(other.m_entityScripts))
+        , m_collisionSubToken(other.m_collisionSubToken)
+        , m_triggerSubToken(other.m_triggerSubToken)
     {
         other.m_L = nullptr;
         other.m_scene = nullptr;
         other.m_textureManager = nullptr;
         other.m_window = nullptr;
         other.m_trackedScriptMemory = 0;
+        other.m_collisionSubToken = 0;
+        other.m_triggerSubToken = 0;
         if (s_activeInstance == &other)
         {
             s_activeInstance = this;
@@ -45,11 +53,16 @@ namespace RL
             m_lastWriteTime = other.m_lastWriteTime;
             m_reloadCheckTimer = other.m_reloadCheckTimer;
             m_trackedScriptMemory = other.m_trackedScriptMemory;
+            m_entityScripts = std::move(other.m_entityScripts);
+            m_collisionSubToken = other.m_collisionSubToken;
+            m_triggerSubToken = other.m_triggerSubToken;
             other.m_L = nullptr;
             other.m_scene = nullptr;
             other.m_textureManager = nullptr;
             other.m_window = nullptr;
             other.m_trackedScriptMemory = 0;
+            other.m_collisionSubToken = 0;
+            other.m_triggerSubToken = 0;
             if (s_activeInstance == &other)
             {
                 s_activeInstance = this;
@@ -148,6 +161,19 @@ namespace RL
 
         RegisterEngineBindings();
 
+        m_collisionSubToken = EventBus::Subscribe<CollisionEvent>([](const CollisionEvent& ev) {
+            if (s_activeInstance)
+            {
+                s_activeInstance->DispatchEntityCollision(ev.entityA, ev.entityB);
+            }
+        });
+        m_triggerSubToken = EventBus::Subscribe<PhysicsTriggerEvent>([](const PhysicsTriggerEvent& ev) {
+            if (s_activeInstance && ev.state == TriggerEvent::State::Enter)
+            {
+                s_activeInstance->DispatchEntityTriggerEnter(ev.triggerEntity, ev.otherEntity);
+            }
+        });
+
         m_scriptPath = mainScriptPath;
 
         if (!std::filesystem::exists(m_scriptPath))
@@ -181,6 +207,19 @@ namespace RL
 
     void ScriptEngine::Shutdown() noexcept
     {
+        if (m_collisionSubToken != 0)
+        {
+            EventBus::Unsubscribe<CollisionEvent>(m_collisionSubToken);
+            m_collisionSubToken = 0;
+        }
+        if (m_triggerSubToken != 0)
+        {
+            EventBus::Unsubscribe<PhysicsTriggerEvent>(m_triggerSubToken);
+            m_triggerSubToken = 0;
+        }
+
+        StopEntityScripts();
+
         if (s_activeInstance == this)
         {
             s_activeInstance = nullptr;
@@ -322,6 +361,295 @@ namespace RL
         else
         {
             lua_pop(m_L, 1);
+        }
+
+        if (m_scene != nullptr)
+        {
+            UpdateEntityScripts(*m_scene, dt);
+        }
+    }
+
+    bool ScriptEngine::LoadEntityScript(Entity entity, const std::string& scriptPath, EntityScriptState& state)
+    {
+        if (!m_L) return false;
+
+        if (state.envRef != LUA_NOREF)
+        {
+            luaL_unref(m_L, LUA_REGISTRYINDEX, state.envRef);
+            state.envRef = LUA_NOREF;
+        }
+        state.started = false;
+        state.scriptPath = scriptPath;
+
+        std::filesystem::path finalPath;
+        if (const auto resolvedPath = VFS::Resolve(scriptPath))
+        {
+            finalPath = *resolvedPath;
+        }
+        else
+        {
+            std::error_code ec;
+            if (std::filesystem::exists(scriptPath, ec))
+            {
+                finalPath = scriptPath;
+            }
+            else
+            {
+                RL_LOG_ERROR("[RLScript] Entity {} script not found via VFS: '{}'", entity.GetID(), scriptPath);
+                return false;
+            }
+        }
+
+        const std::string resolvedStr = finalPath.string();
+        if (luaL_loadfile(m_L, resolvedStr.c_str()) != LUA_OK)
+        {
+            const char* err = lua_tostring(m_L, -1);
+            RL_LOG_ERROR("[RLScript Compilation Error] Entity {} ('{}'): {}", entity.GetID(), scriptPath, err ? err : "Syntax error");
+            lua_pop(m_L, 1);
+            return false;
+        }
+
+        lua_newtable(m_L);
+        lua_newtable(m_L);
+        lua_pushglobaltable(m_L);
+        lua_setfield(m_L, -2, "__index");
+        lua_setmetatable(m_L, -2);
+
+        lua_pushvalue(m_L, -1);
+        lua_setupvalue(m_L, -3, 1);
+
+        lua_pushvalue(m_L, -1);
+        state.envRef = luaL_ref(m_L, LUA_REGISTRYINDEX);
+        lua_pop(m_L, 1);
+
+        if (lua_pcall(m_L, 0, 0, 0) != LUA_OK)
+        {
+            const char* err = lua_tostring(m_L, -1);
+            RL_LOG_ERROR("[RLScript Execution Error] Entity {} ('{}'): {}", entity.GetID(), scriptPath, err ? err : "Runtime error");
+            lua_pop(m_L, 1);
+            if (state.envRef != LUA_NOREF)
+            {
+                luaL_unref(m_L, LUA_REGISTRYINDEX, state.envRef);
+                state.envRef = LUA_NOREF;
+            }
+            return false;
+        }
+
+        RL_LOG_INFO("[RLScript] Loaded entity {} script '{}'", entity.GetID(), scriptPath);
+        return true;
+    }
+
+    void ScriptEngine::CallEntityFunction(Entity entity, EntityScriptState& state, const char* funcName, f32 dt, bool hasDt, Entity otherEntity)
+    {
+        if (!m_L || state.envRef == LUA_NOREF) return;
+
+        lua_rawgeti(m_L, LUA_REGISTRYINDEX, state.envRef);
+        if (!lua_istable(m_L, -1))
+        {
+            lua_pop(m_L, 1);
+            return;
+        }
+
+        lua_pushstring(m_L, funcName);
+        lua_rawget(m_L, -2);
+        lua_remove(m_L, -2);
+
+        if (!lua_isfunction(m_L, -1))
+        {
+            lua_pop(m_L, 1);
+            return;
+        }
+
+        LuaEntityBridge::PushEntity(m_L, entity);
+        int argCount = 1;
+        if (hasDt)
+        {
+            lua_pushnumber(m_L, static_cast<lua_Number>(dt));
+            argCount = 2;
+        }
+        else if (otherEntity.IsValid())
+        {
+            LuaEntityBridge::PushEntity(m_L, otherEntity);
+            argCount = 2;
+        }
+
+        if (lua_pcall(m_L, argCount, 0, 0) != LUA_OK)
+        {
+            const char* err = lua_tostring(m_L, -1);
+            RL_LOG_ERROR("[RLScript Runtime Error] Entity {} {}(): {}", entity.GetID(), funcName, err ? err : "Unknown error");
+            lua_pop(m_L, 1);
+        }
+    }
+
+    void ScriptEngine::StartEntityScripts(Scene& scene)
+    {
+        if (!m_L) return;
+
+        const auto aliveSpan = scene.GetAliveEntities();
+        std::vector<Entity> entities(aliveSpan.begin(), aliveSpan.end());
+
+        for (Entity entity : entities)
+        {
+            if (!scene.IsValid(entity)) continue;
+            const auto* sc = scene.TryGetComponent<ScriptComponent>(entity);
+            if (!sc || !sc->Enabled || sc->ScriptPath.empty()) continue;
+
+            auto& state = m_entityScripts[entity.GetID()];
+            if (state.envRef == LUA_NOREF || state.scriptPath != sc->ScriptPath)
+            {
+                if (!LoadEntityScript(entity, sc->ScriptPath, state)) continue;
+            }
+
+            if (state.envRef != LUA_NOREF && !state.started)
+            {
+                state.started = true;
+                CallEntityFunction(entity, state, "OnStart", 0.0f, false);
+            }
+        }
+    }
+
+    void ScriptEngine::UpdateEntityScripts(Scene& scene, f32 dt)
+    {
+        if (!m_L) return;
+
+        const auto aliveSpan = scene.GetAliveEntities();
+        std::vector<Entity> entities(aliveSpan.begin(), aliveSpan.end());
+
+        for (Entity entity : entities)
+        {
+            if (!scene.IsValid(entity)) continue;
+            const auto* sc = scene.TryGetComponent<ScriptComponent>(entity);
+            if (!sc || !sc->Enabled || sc->ScriptPath.empty()) continue;
+
+            auto& state = m_entityScripts[entity.GetID()];
+            if (state.scriptPath != sc->ScriptPath)
+            {
+                if (!LoadEntityScript(entity, sc->ScriptPath, state)) continue;
+            }
+
+            if (state.envRef == LUA_NOREF) continue;
+
+            if (!state.started)
+            {
+                state.started = true;
+                CallEntityFunction(entity, state, "OnStart", 0.0f, false);
+            }
+
+            if (scene.IsValid(entity))
+            {
+                CallEntityFunction(entity, state, "OnUpdate", dt, true);
+            }
+        }
+
+        for (auto it = m_entityScripts.begin(); it != m_entityScripts.end();)
+        {
+            const Entity ent(it->first);
+            if (!scene.IsValid(ent) || !scene.HasComponent<ScriptComponent>(ent))
+            {
+                if (it->second.envRef != LUA_NOREF)
+                {
+                    luaL_unref(m_L, LUA_REGISTRYINDEX, it->second.envRef);
+                }
+                it = m_entityScripts.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+
+    void ScriptEngine::StopEntityScripts()
+    {
+        if (m_L)
+        {
+            for (auto& [id, state] : m_entityScripts)
+            {
+                if (state.envRef != LUA_NOREF)
+                {
+                    luaL_unref(m_L, LUA_REGISTRYINDEX, state.envRef);
+                }
+            }
+        }
+        m_entityScripts.clear();
+    }
+
+    void ScriptEngine::ReloadEntityScript(Entity entity, Scene& scene)
+    {
+        if (!m_L || !scene.IsValid(entity)) return;
+
+        const auto* sc = scene.TryGetComponent<ScriptComponent>(entity);
+        if (!sc || sc->ScriptPath.empty()) return;
+
+        auto& state = m_entityScripts[entity.GetID()];
+        if (LoadEntityScript(entity, sc->ScriptPath, state))
+        {
+            if (sc->Enabled)
+            {
+                state.started = true;
+                CallEntityFunction(entity, state, "OnStart", 0.0f, false);
+            }
+        }
+    }
+
+    void ScriptEngine::DispatchEntityCollision(Entity a, Entity b)
+    {
+        if (!m_L) return;
+
+        if (a.IsValid())
+        {
+            auto it = m_entityScripts.find(a.GetID());
+            if (it != m_entityScripts.end() && it->second.envRef != LUA_NOREF)
+            {
+                bool enabled = true;
+                if (m_scene)
+                {
+                    const auto* sc = m_scene->TryGetComponent<ScriptComponent>(a);
+                    enabled = (sc && sc->Enabled);
+                }
+                if (enabled)
+                {
+                    CallEntityFunction(a, it->second, "OnCollision", 0.0f, false, b);
+                }
+            }
+        }
+
+        if (b.IsValid())
+        {
+            auto it = m_entityScripts.find(b.GetID());
+            if (it != m_entityScripts.end() && it->second.envRef != LUA_NOREF)
+            {
+                bool enabled = true;
+                if (m_scene)
+                {
+                    const auto* sc = m_scene->TryGetComponent<ScriptComponent>(b);
+                    enabled = (sc && sc->Enabled);
+                }
+                if (enabled)
+                {
+                    CallEntityFunction(b, it->second, "OnCollision", 0.0f, false, a);
+                }
+            }
+        }
+    }
+
+    void ScriptEngine::DispatchEntityTriggerEnter(Entity trigger, Entity other)
+    {
+        if (!m_L || !trigger.IsValid()) return;
+
+        auto it = m_entityScripts.find(trigger.GetID());
+        if (it != m_entityScripts.end() && it->second.envRef != LUA_NOREF)
+        {
+            bool enabled = true;
+            if (m_scene)
+            {
+                const auto* sc = m_scene->TryGetComponent<ScriptComponent>(trigger);
+                enabled = (sc && sc->Enabled);
+            }
+            if (enabled)
+            {
+                CallEntityFunction(trigger, it->second, "OnTriggerEnter", 0.0f, false, other);
+            }
         }
     }
 

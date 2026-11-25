@@ -21,7 +21,7 @@ namespace RL
     using namespace DirectX;
 
     static constexpr u32 BINARY_MAGIC = 0x534C5221;
-    static constexpr u32 BINARY_VERSION = 2;
+    static constexpr u32 BINARY_VERSION = 3;
 
     enum ComponentMask : u32
     {
@@ -421,7 +421,12 @@ namespace RL
         out << "    \"ambient_strength\": " << env.AmbientStrength << ",\n";
         out << "    \"fog_enabled\": " << (env.FogEnabled ? "true" : "false") << ",\n";
         out << "    \"fog_density\": " << env.FogDensity << ",\n";
-        out << "    \"fog_color\": [" << env.FogColor.x << ", " << env.FogColor.y << ", " << env.FogColor.z << "]\n";
+        out << "    \"fog_color\": [" << env.FogColor.x << ", " << env.FogColor.y << ", " << env.FogColor.z << "],\n";
+        out << "    \"post_process_enabled\": " << (env.PostProcessEnabled ? "true" : "false") << ",\n";
+        out << "    \"exposure\": " << env.Exposure << ",\n";
+        out << "    \"bloom_threshold\": " << env.BloomThreshold << ",\n";
+        out << "    \"bloom_intensity\": " << env.BloomIntensity << ",\n";
+        out << "    \"vignette_intensity\": " << env.VignetteIntensity << "\n";
         out << "  },\n";
         out << "  \"entities\": [\n";
 
@@ -606,6 +611,7 @@ namespace RL
                 out << "        \"skeleton_name\": "; WriteEscapeString(out, sk.SkeletonName); out << ",\n";
                 out << "        \"current_animation\": "; WriteEscapeString(out, sk.CurrentAnimation); out << ",\n";
                 out << "        \"animation_speed\": " << sk.AnimationSpeed << ",\n";
+                out << "        \"loop\": " << (sk.Loop ? "true" : "false") << ",\n";
                 out << "        \"is_playing\": " << (sk.IsPlaying ? "true" : "false") << ",\n";
                 out << "        \"is_visible\": " << (sk.IsVisible ? "true" : "false") << "\n";
                 out << "      }";
@@ -736,6 +742,11 @@ namespace RL
             if (const auto* fe = envObj->Find("fog_enabled"); fe && fe->IsBool()) env.FogEnabled = fe->BoolVal;
             if (const auto* fd = envObj->Find("fog_density"); fd && fd->IsNumber()) env.FogDensity = fd->AsFloat();
             env.FogColor = ReadVec3(envObj->Find("fog_color"), env.FogColor);
+            if (const auto* pp = envObj->Find("post_process_enabled"); pp && pp->IsBool()) env.PostProcessEnabled = pp->BoolVal;
+            if (const auto* ex = envObj->Find("exposure"); ex && ex->IsNumber()) env.Exposure = ex->AsFloat();
+            if (const auto* bt = envObj->Find("bloom_threshold"); bt && bt->IsNumber()) env.BloomThreshold = bt->AsFloat();
+            if (const auto* bi = envObj->Find("bloom_intensity"); bi && bi->IsNumber()) env.BloomIntensity = bi->AsFloat();
+            if (const auto* vi = envObj->Find("vignette_intensity"); vi && vi->IsNumber()) env.VignetteIntensity = vi->AsFloat();
         }
 
         std::vector<std::pair<Entity, UUID>> pendingParents;
@@ -908,6 +919,7 @@ namespace RL
                 if (const auto* sn = skObj->Find("skeleton_name"); sn && sn->IsString()) sk.SkeletonName = sn->StrVal;
                 if (const auto* ca = skObj->Find("current_animation"); ca && ca->IsString()) sk.CurrentAnimation = ca->StrVal;
                 if (const auto* as = skObj->Find("animation_speed"); as && as->IsNumber()) sk.AnimationSpeed = as->AsFloat();
+                if (const auto* lp = skObj->Find("loop"); lp && lp->IsBool()) sk.Loop = lp->BoolVal;
                 if (const auto* ip = skObj->Find("is_playing"); ip && ip->IsBool()) sk.IsPlaying = ip->BoolVal;
                 if (const auto* iv = skObj->Find("is_visible"); iv && iv->IsBool()) sk.IsVisible = iv->BoolVal;
             }
@@ -1064,6 +1076,12 @@ namespace RL
         WriteBinary(out, fogEnabled);
         WriteBinary(out, env.FogDensity);
         WriteBinary(out, env.FogColor);
+        const u8 postProcessEnabled = env.PostProcessEnabled ? 1u : 0u;
+        WriteBinary(out, postProcessEnabled);
+        WriteBinary(out, env.Exposure);
+        WriteBinary(out, env.BloomThreshold);
+        WriteBinary(out, env.BloomIntensity);
+        WriteBinary(out, env.VignetteIntensity);
 
         const auto& alive = scene.GetAliveEntities();
         u32 validCount = 0;
@@ -1244,7 +1262,7 @@ namespace RL
                 WriteBinaryString(out, sk.SkeletonName);
                 WriteBinaryString(out, sk.CurrentAnimation);
                 WriteBinary(out, sk.AnimationSpeed);
-                const u8 sf = (sk.IsPlaying ? 1u : 0u) | (sk.IsVisible ? 2u : 0u);
+                const u8 sf = (sk.IsPlaying ? 1u : 0u) | (sk.IsVisible ? 2u : 0u) | (sk.Loop ? 4u : 0u);
                 WriteBinary(out, sf);
             }
 
@@ -1354,7 +1372,7 @@ namespace RL
         u32 count = 0;
 
         if (!ReadBinary(in, magic) || magic != BINARY_MAGIC) return false;
-        if (!ReadBinary(in, version) || (version != 1 && version != BINARY_VERSION)) return false;
+        if (!ReadBinary(in, version) || version < 1 || version > BINARY_VERSION) return false;
 
         WorldEnvironment env{};
         if (version >= 2)
@@ -1366,6 +1384,16 @@ namespace RL
             if (!ReadBinary(in, env.FogDensity)) return false;
             if (!ReadBinary(in, env.FogColor)) return false;
             env.FogEnabled = (fogEnabled != 0);
+        }
+        if (version >= 3)
+        {
+            u8 ppEnabled = 1;
+            if (!ReadBinary(in, ppEnabled)) return false;
+            if (!ReadBinary(in, env.Exposure)) return false;
+            if (!ReadBinary(in, env.BloomThreshold)) return false;
+            if (!ReadBinary(in, env.BloomIntensity)) return false;
+            if (!ReadBinary(in, env.VignetteIntensity)) return false;
+            env.PostProcessEnabled = (ppEnabled != 0);
         }
 
         if (!ReadBinary(in, count)) return false;
@@ -1549,6 +1577,7 @@ namespace RL
                 ReadBinary(in, sf);
                 sk.IsPlaying = (sf & 1u) != 0;
                 sk.IsVisible = (sf & 2u) != 0;
+                sk.Loop = (version >= 3) ? ((sf & 4u) != 0) : true;
             }
 
             if (mask & Mask_AudioSource)

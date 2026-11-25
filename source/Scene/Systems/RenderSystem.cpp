@@ -222,6 +222,31 @@ namespace RL
             {
                 std::memset(m_lightBuffers[i].GetMappedData(), 0, MaxDynamicLights * sizeof(DynamicLightData));
             }
+
+            const usize ppCbSize = (sizeof(PostProcessConstants) + 255) & ~static_cast<usize>(255);
+            auto ppCbRes = m_postProcessConstantBuffers[i].Initialize(
+                device,
+                ppCbSize,
+                BufferType::Constant,
+                D3D12_HEAP_TYPE_UPLOAD
+            );
+            if (!ppCbRes)
+            {
+                return std::unexpected(std::format("Failed to allocate PostProcess ConstantBuffer for frame {}: {}", i, ppCbRes.error()));
+            }
+        }
+
+        D3D12_DESCRIPTOR_HEAP_DESC hdrRtvHeapDesc{};
+        hdrRtvHeapDesc.NumDescriptors = 1;
+        hdrRtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        hdrRtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (SUCCEEDED(device->CreateDescriptorHeap(&hdrRtvHeapDesc, IID_PPV_ARGS(&m_hdrRtvHeap))))
+        {
+            m_hdrRtv = m_hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        }
+        if (m_descriptorManager)
+        {
+            m_hdrSrvIndex = m_descriptorManager->Allocate();
         }
 
         for (u32 f = 0; f < FrameCount; ++f)
@@ -396,11 +421,26 @@ namespace RL
             m_lightBuffers[i].Destroy();
             m_instanceBuffers[i].Destroy();
             m_frameConstantBuffers[i].Destroy();
+            m_postProcessConstantBuffers[i].Destroy();
         }
+        DestroyHdrRenderTarget();
+        if (m_descriptorManager && m_hdrSrvIndex != DescriptorManager::InvalidIndex)
+        {
+            m_descriptorManager->Free(m_hdrSrvIndex);
+            m_hdrSrvIndex = DescriptorManager::InvalidIndex;
+        }
+        m_hdrRtvHeap.Reset();
+        m_hdrRtv = {};
+        m_postProcessPipeline.Reset();
+        m_postProcessRootSig.Reset();
         m_meshPipeline = Pipeline{};
         m_wireframePipeline = Pipeline{};
         m_gridPipeline = Pipeline{};
         m_shadowPipeline = Pipeline{};
+        m_meshHdrPipeline = Pipeline{};
+        m_wireframeHdrPipeline = Pipeline{};
+        m_quadHdrPipeline = Pipeline{};
+        m_gridHdrPipeline = Pipeline{};
 
         for (u32 f = 0; f < FrameCount; ++f)
         {
@@ -432,6 +472,212 @@ namespace RL
         m_instanceCapacity = InitialInstanceCapacity;
         m_lastRenderedCount = 0;
         RL_LOG_INFO("[RenderSystem] RenderSystem GPU resources cleaned up.");
+    }
+
+    void RenderSystem::OnResize(u32 width, u32 height)
+    {
+        if (!m_device || width == 0 || height == 0)
+        {
+            return;
+        }
+        if (m_hdrTarget && m_hdrWidth == width && m_hdrHeight == height)
+        {
+            return;
+        }
+        CreateHdrRenderTarget(width, height);
+    }
+
+    void RenderSystem::DestroyHdrRenderTarget() noexcept
+    {
+        m_hdrTarget.Reset();
+        m_hdrWidth = 0;
+        m_hdrHeight = 0;
+        m_hdrState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+
+    bool RenderSystem::CreateHdrRenderTarget(u32 width, u32 height)
+    {
+        if (!m_device || !m_hdrRtvHeap || width == 0 || height == 0)
+        {
+            return false;
+        }
+
+        DestroyHdrRenderTarget();
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        heapProps.CreationNodeMask = 1;
+        heapProps.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC resDesc{};
+        resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        resDesc.Alignment = 0;
+        resDesc.Width = width;
+        resDesc.Height = height;
+        resDesc.DepthOrArraySize = 1;
+        resDesc.MipLevels = 1;
+        resDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        resDesc.SampleDesc.Count = 1;
+        resDesc.SampleDesc.Quality = 0;
+        resDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        resDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        D3D12_CLEAR_VALUE clearVal{};
+        clearVal.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        clearVal.Color[0] = 0.04f;
+        clearVal.Color[1] = 0.06f;
+        clearVal.Color[2] = 0.09f;
+        clearVal.Color[3] = 1.0f;
+
+        HRESULT hr = m_device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &resDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearVal,
+            IID_PPV_ARGS(&m_hdrTarget));
+
+        if (FAILED(hr) || !m_hdrTarget)
+        {
+            RL_LOG_ERROR("[RenderSystem] Failed to create HDR render target ({}x{}).", width, height);
+            return false;
+        }
+
+        m_hdrRtv = m_hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+        rtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Texture2D.MipSlice = 0;
+        rtvDesc.Texture2D.PlaneSlice = 0;
+        m_device->CreateRenderTargetView(m_hdrTarget.Get(), &rtvDesc, m_hdrRtv);
+
+        if (m_descriptorManager && m_hdrSrvIndex != DescriptorManager::InvalidIndex)
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Texture2D.MostDetailedMip = 0;
+            srvDesc.Texture2D.MipLevels = 1;
+            srvDesc.Texture2D.PlaneSlice = 0;
+            srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+            m_device->CreateShaderResourceView(m_hdrTarget.Get(), &srvDesc, m_descriptorManager->GetCPUHandle(m_hdrSrvIndex));
+        }
+
+        m_hdrWidth = width;
+        m_hdrHeight = height;
+        m_hdrState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        return true;
+    }
+
+    std::expected<void, std::string> RenderSystem::CreatePostProcessPipeline(const std::filesystem::path& shaderPath)
+    {
+        if (!m_device || !m_shaderCompiler)
+        {
+            return std::unexpected("Device or ShaderCompiler is null when creating PostProcess pipeline.");
+        }
+
+        auto ppVsBlob = m_shaderCompiler->RecompileVertexShader(shaderPath, "VSMain", "6_5");
+        if (!ppVsBlob)
+        {
+            return std::unexpected(std::format("PostProcess VS compilation error: {}", ppVsBlob.error()));
+        }
+        auto ppPsBlob = m_shaderCompiler->RecompilePixelShader(shaderPath, "PSMain", "6_5");
+        if (!ppPsBlob)
+        {
+            return std::unexpected(std::format("PostProcess PS compilation error: {}", ppPsBlob.error()));
+        }
+
+        D3D12_DESCRIPTOR_RANGE srvRange{};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 1;
+        srvRange.BaseShaderRegister = 0;
+        srvRange.RegisterSpace = 0;
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER rootParams[2]{};
+        rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParams[0].Descriptor.ShaderRegister = 0;
+        rootParams[0].Descriptor.RegisterSpace = 0;
+
+        rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+        rootParams[1].DescriptorTable.pDescriptorRanges = &srvRange;
+
+        D3D12_STATIC_SAMPLER_DESC staticSampler{};
+        staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        staticSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        staticSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        staticSampler.MipLODBias = 0.0f;
+        staticSampler.MaxAnisotropy = 1;
+        staticSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        staticSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+        staticSampler.MinLOD = 0.0f;
+        staticSampler.MaxLOD = D3D12_FLOAT32_MAX;
+        staticSampler.ShaderRegister = 0;
+        staticSampler.RegisterSpace = 0;
+        staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_ROOT_SIGNATURE_DESC rootSigDesc{};
+        rootSigDesc.NumParameters = 2;
+        rootSigDesc.pParameters = rootParams;
+        rootSigDesc.NumStaticSamplers = 1;
+        rootSigDesc.pStaticSamplers = &staticSampler;
+        rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+        ComPtr<ID3DBlob> sigBlob;
+        ComPtr<ID3DBlob> errBlob;
+        HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errBlob);
+        if (FAILED(hr))
+        {
+            const std::string errStr = errBlob ? static_cast<const char*>(errBlob->GetBufferPointer()) : "Unknown error";
+            return std::unexpected(std::format("Failed to serialize PostProcess root signature: {}", errStr));
+        }
+
+        ComPtr<ID3D12RootSignature> newRootSig;
+        hr = m_device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&newRootSig));
+        if (FAILED(hr))
+        {
+            return std::unexpected("Failed to create PostProcess root signature.");
+        }
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+        psoDesc.pRootSignature = newRootSig.Get();
+        psoDesc.VS = { (*ppVsBlob)->GetBufferPointer(), (*ppVsBlob)->GetBufferSize() };
+        psoDesc.PS = { (*ppPsBlob)->GetBufferPointer(), (*ppPsBlob)->GetBufferSize() };
+        psoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+        psoDesc.BlendState.IndependentBlendEnable = FALSE;
+        psoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
+        psoDesc.BlendState.RenderTarget[0].LogicOpEnable = FALSE;
+        psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.RasterizerState.DepthClipEnable = FALSE;
+        psoDesc.DepthStencilState.DepthEnable = FALSE;
+        psoDesc.DepthStencilState.StencilEnable = FALSE;
+        psoDesc.InputLayout = { nullptr, 0 };
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        psoDesc.SampleDesc.Count = 1;
+        psoDesc.SampleDesc.Quality = 0;
+
+        ComPtr<ID3D12PipelineState> newPso;
+        hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&newPso));
+        if (FAILED(hr))
+        {
+            return std::unexpected("Failed to create PostProcess PSO.");
+        }
+
+        m_postProcessRootSig = std::move(newRootSig);
+        m_postProcessPipeline = std::move(newPso);
+        return {};
     }
 
     void RenderSystem::RegisterMesh(std::string_view name, std::shared_ptr<Mesh> mesh)
@@ -843,6 +1089,16 @@ namespace RL
             return;
         }
 
+        if (m_viewport.Width > 0.0f && m_viewport.Height > 0.0f)
+        {
+            const u32 vpW = static_cast<u32>(m_viewport.Width);
+            const u32 vpH = static_cast<u32>(m_viewport.Height);
+            if (!m_hdrTarget || m_hdrWidth != vpW || m_hdrHeight != vpH)
+            {
+                OnResize(vpW, vpH);
+            }
+        }
+
         if (m_descriptorManager)
         {
             m_descriptorManager->Bind(cmdList);
@@ -1188,6 +1444,16 @@ namespace RL
         u32 meshInstanceCount = 0;
         PrepareMeshInstances(scene, mappedInstances, meshInstanceCount, cameraFrustum);
 
+        const bool usePostProcess = env.PostProcessEnabled &&
+            m_hdrTarget &&
+            m_hdrRtv.ptr != 0 &&
+            m_postProcessRootSig &&
+            m_postProcessPipeline &&
+            m_descriptorManager &&
+            m_hdrSrvIndex != DescriptorManager::InvalidIndex &&
+            m_mainRtv.ptr != 0 &&
+            m_meshHdrPipeline.GetPipelineState() != nullptr;
+
         if (shadingMode == SceneShadingMode::Rendered && m_shadowMap && m_shadowPipeline.GetPipelineState() && !m_activeBatches.empty())
         {
             for (u32 cascadeIdx = 0; cascadeIdx < ShadowMap::CascadeCount; ++cascadeIdx)
@@ -1222,20 +1488,41 @@ namespace RL
                 cmdList->DrawIndexedInstanced(batch.MeshPtr->GetIndexCount(), batch.Count, 0, 0, batch.StartInstance);
             }
             m_shadowMap->EndPoint(cmdList);
+        }
 
-            if (m_mainRtv.ptr != 0 && m_mainDsv.ptr != 0)
+        if (usePostProcess)
+        {
+            if (m_hdrState != D3D12_RESOURCE_STATE_RENDER_TARGET)
             {
-                cmdList->RSSetViewports(1, &m_viewport);
-                cmdList->RSSetScissorRects(1, &m_scissorRect);
-                cmdList->OMSetRenderTargets(1, &m_mainRtv, FALSE, &m_mainDsv);
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                barrier.Transition.pResource = m_hdrTarget.Get();
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barrier.Transition.StateBefore = m_hdrState;
+                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                cmdList->ResourceBarrier(1, &barrier);
+                m_hdrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
             }
+            const float clearColor[4] = { env.SkyColor.x, env.SkyColor.y, env.SkyColor.z, env.SkyColor.w };
+            cmdList->ClearRenderTargetView(m_hdrRtv, clearColor, 0, nullptr);
+            cmdList->RSSetViewports(1, &m_viewport);
+            cmdList->RSSetScissorRects(1, &m_scissorRect);
+            cmdList->OMSetRenderTargets(1, &m_hdrRtv, FALSE, (m_mainDsv.ptr != 0) ? &m_mainDsv : nullptr);
+        }
+        else if (m_mainRtv.ptr != 0 && m_mainDsv.ptr != 0)
+        {
+            cmdList->RSSetViewports(1, &m_viewport);
+            cmdList->RSSetScissorRects(1, &m_scissorRect);
+            cmdList->OMSetRenderTargets(1, &m_mainRtv, FALSE, &m_mainDsv);
         }
 
         u32 renderedCount = 0;
 
-        if (m_showGrid && m_gridMesh && m_gridPipeline.GetPipelineState())
+        const Pipeline& activeGridPipeline = usePostProcess ? m_gridHdrPipeline : m_gridPipeline;
+        if (m_showGrid && m_gridMesh && activeGridPipeline.GetPipelineState())
         {
-            m_gridPipeline.Bind(cmdList);
+            activeGridPipeline.Bind(cmdList);
             cmdList->SetGraphicsRootConstantBufferView(0, passGpuAddr);
             if (m_descriptorManager)
             {
@@ -1246,7 +1533,9 @@ namespace RL
             m_gridMesh->Draw(cmdList);
         }
 
-        if (!m_activeBatches.empty() && m_meshPipeline.GetPipelineState())
+        const Pipeline& activeMeshPipeline = usePostProcess ? m_meshHdrPipeline : m_meshPipeline;
+        const Pipeline& activeWireframePipeline = usePostProcess ? m_wireframeHdrPipeline : m_wireframePipeline;
+        if (!m_activeBatches.empty() && activeMeshPipeline.GetPipelineState())
         {
             bool hasBoundMeshPipeline = false;
             bool boundWireframe = false;
@@ -1254,17 +1543,17 @@ namespace RL
             for (const auto& batch : m_activeBatches)
             {
                 const bool useWireframe = ((shadingMode == SceneShadingMode::Wireframe) || batch.Wireframe) &&
-                                          (m_wireframePipeline.GetPipelineState() != nullptr);
+                                          (activeWireframePipeline.GetPipelineState() != nullptr);
 
                 if (!hasBoundMeshPipeline || useWireframe != boundWireframe)
                 {
                     if (useWireframe)
                     {
-                        m_wireframePipeline.Bind(cmdList);
+                        activeWireframePipeline.Bind(cmdList);
                     }
                     else
                     {
-                        m_meshPipeline.Bind(cmdList);
+                        activeMeshPipeline.Bind(cmdList);
                     }
                     cmdList->SetGraphicsRootConstantBufferView(0, passGpuAddr);
                     if (m_descriptorManager)
@@ -1288,8 +1577,9 @@ namespace RL
 
         renderedCount += meshInstanceCount;
 
+        const Pipeline* activeQuadPipeline = usePostProcess ? &m_quadHdrPipeline : m_quadPipeline;
         const auto* quadPool = scene.GetPool<QuadRenderComponent>();
-        if (quadPool && transformPool && m_quadPipeline && m_quadPipeline->GetPipelineState())
+        if (quadPool && transformPool && activeQuadPipeline && activeQuadPipeline->GetPipelineState())
         {
             const auto quads = quadPool->GetData();
             const usize totalQuads = quads.size();
@@ -1303,7 +1593,7 @@ namespace RL
                 const u32 quadCount = renderedCount - startInstance;
                 if (quadCount > 0)
                 {
-                    m_quadPipeline->Bind(cmdList);
+                    activeQuadPipeline->Bind(cmdList);
                     cmdList->SetGraphicsRootConstantBufferView(0, passGpuAddr);
                     if (m_descriptorManager)
                     {
@@ -1318,6 +1608,48 @@ namespace RL
                     cmdList->DrawIndexedInstanced(6, quadCount, 0, 0, 0);
                 }
             }
+        }
+
+        if (usePostProcess)
+        {
+            if (m_hdrState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+            {
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                barrier.Transition.pResource = m_hdrTarget.Get();
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barrier.Transition.StateBefore = m_hdrState;
+                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                cmdList->ResourceBarrier(1, &barrier);
+                m_hdrState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
+
+            cmdList->RSSetViewports(1, &m_viewport);
+            cmdList->RSSetScissorRects(1, &m_scissorRect);
+            cmdList->OMSetRenderTargets(1, &m_mainRtv, FALSE, nullptr);
+
+            if (auto* ppCb = static_cast<PostProcessConstants*>(m_postProcessConstantBuffers[frameIndex].GetMappedData()))
+            {
+                ppCb->Exposure = env.Exposure;
+                ppCb->BloomThreshold = env.BloomThreshold;
+                ppCb->BloomIntensity = env.BloomIntensity;
+                ppCb->VignetteIntensity = env.VignetteIntensity;
+                ppCb->TexelSize = {
+                    1.0f / static_cast<f32>(std::max(m_hdrWidth, 1u)),
+                    1.0f / static_cast<f32>(std::max(m_hdrHeight, 1u))
+                };
+                ppCb->Pad = { 0.0f, 0.0f };
+            }
+
+            cmdList->SetGraphicsRootSignature(m_postProcessRootSig.Get());
+            cmdList->SetPipelineState(m_postProcessPipeline.Get());
+            cmdList->SetGraphicsRootConstantBufferView(0, m_postProcessConstantBuffers[frameIndex].GetGPUVirtualAddress());
+            m_descriptorManager->SetGraphicsRootDescriptorTable(cmdList, 1, m_hdrSrvIndex);
+            cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            cmdList->DrawInstanced(3, 1, 0, 0);
+
+            cmdList->OMSetRenderTargets(1, &m_mainRtv, FALSE, (m_mainDsv.ptr != 0) ? &m_mainDsv : nullptr);
         }
 
         m_lastRenderedCount = renderedCount;
@@ -1398,6 +1730,15 @@ namespace RL
             return std::unexpected(std::format("Mesh pipeline creation failed: {}", initMeshRes.error()));
         }
 
+        PipelineConfig meshHdrCfg = meshCfg;
+        meshHdrCfg.RtvFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        Pipeline newMeshHdrPipeline;
+        auto initMeshHdrRes = newMeshHdrPipeline.Initialize(m_device, (*meshVsBlob).Get(), (*meshPsBlob).Get(), meshLayout, meshHdrCfg);
+        if (!initMeshHdrRes)
+        {
+            return std::unexpected(std::format("Mesh HDR pipeline creation failed: {}", initMeshHdrRes.error()));
+        }
+
         PipelineConfig wireframeCfg = meshCfg;
         wireframeCfg.FillMode = D3D12_FILL_MODE_WIREFRAME;
         wireframeCfg.CullMode = D3D12_CULL_MODE_NONE;
@@ -1407,6 +1748,15 @@ namespace RL
         if (!initWireframeRes)
         {
             return std::unexpected(std::format("Wireframe pipeline creation failed: {}", initWireframeRes.error()));
+        }
+
+        PipelineConfig wireframeHdrCfg = wireframeCfg;
+        wireframeHdrCfg.RtvFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        Pipeline newWireframeHdrPipeline;
+        auto initWireframeHdrRes = newWireframeHdrPipeline.Initialize(m_device, (*meshVsBlob).Get(), (*meshPsBlob).Get(), meshLayout, wireframeHdrCfg);
+        if (!initWireframeHdrRes)
+        {
+            return std::unexpected(std::format("Wireframe HDR pipeline creation failed: {}", initWireframeHdrRes.error()));
         }
 
         const auto quadShaderPath = resolveShader("shaders/quad.hlsl");
@@ -1443,6 +1793,15 @@ namespace RL
         if (!initQuadRes)
         {
             return std::unexpected(std::format("Quad pipeline creation failed: {}", initQuadRes.error()));
+        }
+
+        PipelineConfig quadHdrCfg = quadCfg;
+        quadHdrCfg.RtvFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        Pipeline newQuadHdrPipeline;
+        auto initQuadHdrRes = newQuadHdrPipeline.Initialize(m_device, (*quadVsBlob).Get(), (*quadPsBlob).Get(), quadLayout, quadHdrCfg);
+        if (!initQuadHdrRes)
+        {
+            return std::unexpected(std::format("Quad HDR pipeline creation failed: {}", initQuadHdrRes.error()));
         }
 
         const auto shadowShaderPath = resolveShader("shaders/shadow_depth.hlsl");
@@ -1502,12 +1861,32 @@ namespace RL
             return std::unexpected(std::format("Grid pipeline creation failed: {}", initGridRes.error()));
         }
 
+        PipelineConfig gridHdrCfg = gridCfg;
+        gridHdrCfg.RtvFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        Pipeline newGridHdrPipeline;
+        auto initGridHdrRes = newGridHdrPipeline.Initialize(m_device, (*gridVsBlob).Get(), (*gridPsBlob).Get(), meshLayout, gridHdrCfg);
+        if (!initGridHdrRes)
+        {
+            return std::unexpected(std::format("Grid HDR pipeline creation failed: {}", initGridHdrRes.error()));
+        }
+
+        const auto postProcessShaderPath = resolveShader("shaders/postprocess.hlsl");
+        auto ppRes = CreatePostProcessPipeline(postProcessShaderPath);
+        if (!ppRes)
+        {
+            RL_LOG_WARN("[RenderSystem] PostProcess pipeline warning: {}", ppRes.error());
+        }
+
         m_meshPipeline = std::move(newMeshPipeline);
         m_wireframePipeline = std::move(newWireframePipeline);
         m_ownedQuadPipeline = std::move(newQuadPipeline);
         m_quadPipeline = &m_ownedQuadPipeline;
         m_shadowPipeline = std::move(newShadowPipeline);
         m_gridPipeline = std::move(newGridPipeline);
+        m_meshHdrPipeline = std::move(newMeshHdrPipeline);
+        m_wireframeHdrPipeline = std::move(newWireframeHdrPipeline);
+        m_quadHdrPipeline = std::move(newQuadHdrPipeline);
+        m_gridHdrPipeline = std::move(newGridHdrPipeline);
 
         RL_LOG_INFO("[RenderSystem] All 5 graphics pipelines reloaded successfully.");
         return {};

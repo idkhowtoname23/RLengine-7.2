@@ -247,10 +247,10 @@ namespace RL::Editor
                 ImGui::EndTooltip();
             }
 
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+            if (!isDir && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
             {
                 const std::string fullVirtual = m_currentPath + name;
-                ImGui::SetDragDropPayload("ASSET_PATH", fullVirtual.c_str(),
+                ImGui::SetDragDropPayload("RL_ASSET_PATH", fullVirtual.c_str(),
                     fullVirtual.size() + 1);
                 ImGui::Text("  %s  %s", iconLabel, name.c_str());
                 ImGui::EndDragDropSource();

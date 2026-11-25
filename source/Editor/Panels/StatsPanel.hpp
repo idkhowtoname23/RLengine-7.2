@@ -2,6 +2,7 @@
 
 #include "Editor/UI/Panel.hpp"
 #include "Editor/History/CommandHistory.hpp"
+#include "Assets/AssetManager.hpp"
 #include "Core/Types.hpp"
 #include "Core/Memory/MemoryStats.hpp"
 
@@ -114,6 +115,9 @@ namespace RL::Editor
                 RL::Editor::CommandHistory::GetUndoCount()));
             ImGui::Text("Redo stack:   %u", static_cast<u32>(
                 RL::Editor::CommandHistory::GetRedoCount()));
+            ImGui::Text("Assets:       %zu cached (%zu pending)",
+                RL::AssetManager::GetCachedAssetCount(),
+                RL::AssetManager::GetPendingAsyncCount());
         }
 
     private:
