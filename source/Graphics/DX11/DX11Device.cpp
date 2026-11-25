@@ -36,6 +36,8 @@ namespace RL
         DirectX::XMFLOAT4 SpotLightDir;
         DirectX::XMFLOAT4 SpotLightColor;
         DirectX::XMFLOAT4 MaterialParams;
+        DirectX::XMFLOAT4 PostProcessParams;
+        DirectX::XMFLOAT4 ViewportParams;
     };
 
     namespace
@@ -55,6 +57,99 @@ namespace RL
                 });
             }
             return dst;
+        }
+
+        [[nodiscard]] std::vector<DX11CpuVertex> ConvertCpuVertices(std::span<const MeshVertex> src)
+        {
+            std::vector<DX11CpuVertex> dst;
+            dst.reserve(src.size());
+            for (const auto& v : src)
+            {
+                dst.push_back(DX11CpuVertex{
+                    { v.Position.x, v.Position.y, v.Position.z },
+                    { v.Normal.x, v.Normal.y, v.Normal.z },
+                    { v.UV.x, v.UV.y },
+                    { v.Color.x, v.Color.y, v.Color.z, v.Color.w },
+                    { v.Tangent.x, v.Tangent.y, v.Tangent.z, v.Tangent.w },
+                    { v.BoneIndices.x, v.BoneIndices.y, v.BoneIndices.z, v.BoneIndices.w },
+                    { v.BoneWeights.x, v.BoneWeights.y, v.BoneWeights.z, v.BoneWeights.w }
+                });
+            }
+            return dst;
+        }
+
+        void DeformSingleVertex(
+            const float pos[3],
+            const float norm[3],
+            const float uv[2],
+            const float col[4],
+            const float tan[4],
+            const u32 bi[4],
+            const float bw[4],
+            std::span<const DirectX::XMFLOAT4X4> bonePalette,
+            DX11Vertex& out) noexcept
+        {
+            const f32 wSum = bw[0] + bw[1] + bw[2] + bw[3];
+            const usize boneCount = bonePalette.size();
+
+            if (wSum > 0.001f && boneCount > 0)
+            {
+                DirectX::XMMATRIX skinMat = DirectX::XMMatrixSet(
+                    0.0f, 0.0f, 0.0f, 0.0f,
+                    0.0f, 0.0f, 0.0f, 0.0f,
+                    0.0f, 0.0f, 0.0f, 0.0f,
+                    0.0f, 0.0f, 0.0f, 0.0f);
+                bool anyValid = false;
+
+                for (u32 j = 0; j < 4; ++j)
+                {
+                    if (bw[j] > 0.0f && bi[j] < boneCount)
+                    {
+                        const DirectX::XMMATRIX bMat = DirectX::XMLoadFloat4x4(&bonePalette[bi[j]]);
+                        skinMat = skinMat + bMat * bw[j];
+                        anyValid = true;
+                    }
+                }
+
+                if (anyValid)
+                {
+                    const DirectX::XMVECTOR pVec = DirectX::XMVectorSet(pos[0], pos[1], pos[2], 1.0f);
+                    const DirectX::XMVECTOR nVec = DirectX::XMVectorSet(norm[0], norm[1], norm[2], 0.0f);
+                    const DirectX::XMVECTOR tVec = DirectX::XMVectorSet(tan[0], tan[1], tan[2], 0.0f);
+
+                    const DirectX::XMVECTOR sp = DirectX::XMVector4Transform(pVec, skinMat);
+                    DirectX::XMVECTOR sn = DirectX::XMVector3TransformNormal(nVec, skinMat);
+                    if (DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(sn)) > 1e-6f)
+                    {
+                        sn = DirectX::XMVector3Normalize(sn);
+                    }
+                    DirectX::XMVECTOR st = DirectX::XMVector3TransformNormal(tVec, skinMat);
+                    if (DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(st)) > 1e-6f)
+                    {
+                        st = DirectX::XMVector3Normalize(st);
+                    }
+
+                    DirectX::XMFLOAT3 sp3{};
+                    DirectX::XMFLOAT3 sn3{};
+                    DirectX::XMFLOAT3 st3{};
+                    DirectX::XMStoreFloat3(&sp3, sp);
+                    DirectX::XMStoreFloat3(&sn3, sn);
+                    DirectX::XMStoreFloat3(&st3, st);
+
+                    out.p[0] = sp3.x; out.p[1] = sp3.y; out.p[2] = sp3.z;
+                    out.n[0] = sn3.x; out.n[1] = sn3.y; out.n[2] = sn3.z;
+                    out.uv[0] = uv[0]; out.uv[1] = uv[1];
+                    out.c[0] = col[0]; out.c[1] = col[1]; out.c[2] = col[2]; out.c[3] = col[3];
+                    out.t[0] = st3.x; out.t[1] = st3.y; out.t[2] = st3.z; out.t[3] = tan[3];
+                    return;
+                }
+            }
+
+            out.p[0] = pos[0]; out.p[1] = pos[1]; out.p[2] = pos[2];
+            out.n[0] = norm[0]; out.n[1] = norm[1]; out.n[2] = norm[2];
+            out.uv[0] = uv[0]; out.uv[1] = uv[1];
+            out.c[0] = col[0]; out.c[1] = col[1]; out.c[2] = col[2]; out.c[3] = col[3];
+            out.t[0] = tan[0]; out.t[1] = tan[1]; out.t[2] = tan[2]; out.t[3] = tan[3];
         }
 
         [[nodiscard]] std::string CanonicalPrimitiveName(std::string_view name)
@@ -193,6 +288,7 @@ namespace RL
         }
 
         m_meshCache.clear();
+        m_emitterStates.clear();
         m_textureCache.clear();
         m_fallbackSRV.Reset();
         m_fallbackTexture.Reset();
@@ -212,6 +308,12 @@ namespace RL
         m_gridVertexBuffer.Reset();
         m_gridVertexCount = 0;
 
+        m_skinnedVertexBuffer.Reset();
+        m_skinnedVertexCapacity = 0;
+        m_lastRenderedSkinnedCount = 0;
+        m_lastRenderedParticleCount = 0;
+        m_hasLastRenderTime = false;
+
         m_cubeIndexBuffer.Reset();
         m_cubeVertexBuffer.Reset();
         m_constantBuffer.Reset();
@@ -222,6 +324,7 @@ namespace RL
         m_alphaBlendState.Reset();
         m_wireframeRasterState.Reset();
         m_rasterState.Reset();
+        m_depthReadOnlyState.Reset();
         m_depthState.Reset();
         m_dsv.Reset();
         m_depthBuffer.Reset();
@@ -473,6 +576,17 @@ namespace RL
         if (FAILED(hr))
         {
             return std::unexpected(std::format("Failed to create DX11 DepthStencilState: 0x{:08X}", static_cast<u32>(hr)));
+        }
+
+        D3D11_DEPTH_STENCIL_DESC dsReadOnlyDesc{};
+        dsReadOnlyDesc.DepthEnable = TRUE;
+        dsReadOnlyDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+        dsReadOnlyDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+
+        hr = m_device->CreateDepthStencilState(&dsReadOnlyDesc, &m_depthReadOnlyState);
+        if (FAILED(hr))
+        {
+            return std::unexpected(std::format("Failed to create DX11 ReadOnly DepthStencilState: 0x{:08X}", static_cast<u32>(hr)));
         }
 
         D3D11_RASTERIZER_DESC rastDesc{};
@@ -777,7 +891,15 @@ namespace RL
             return nullptr;
         }
         const auto dx11Verts = ConvertMeshVertices(vertices);
-        return UploadMeshData(key, dx11Verts, indices, isLineList);
+        const auto* uploaded = UploadMeshData(key, dx11Verts, indices, isLineList);
+        if (uploaded)
+        {
+            if (const auto it = m_meshCache.find(std::string(key)); it != m_meshCache.end())
+            {
+                it->second.cpuVertices = ConvertCpuVertices(vertices);
+            }
+        }
+        return uploaded;
     }
 
     std::expected<void, std::string> DX11Device::InitProceduralMeshes()
@@ -795,6 +917,145 @@ namespace RL
             }
         }
         return {};
+    }
+
+    const DX11MeshBuffers* DX11Device::GetOrCreateMeshByPath(std::string_view modelPath)
+    {
+        if (!modelPath.empty())
+        {
+            const std::string pathStr(modelPath);
+            if (const auto it = m_meshCache.find(pathStr); it != m_meshCache.end())
+            {
+                return &it->second;
+            }
+
+            std::filesystem::path resolvedPath = pathStr;
+            if (const auto vfsResolved = VFS::Resolve(pathStr); vfsResolved && std::filesystem::exists(*vfsResolved))
+            {
+                resolvedPath = *vfsResolved;
+            }
+            else if (const auto assetsResolved = VFS::Resolve("assets://" + pathStr); assetsResolved && std::filesystem::exists(*assetsResolved))
+            {
+                resolvedPath = *assetsResolved;
+            }
+
+            MeshAsset loadedMesh;
+            if (MeshAssetImporter::LoadCpuMesh(resolvedPath, loadedMesh) && !loadedMesh.vertices.empty())
+            {
+                if (const auto* uploaded = UploadCpuMeshVertices(pathStr, loadedMesh.vertices, loadedMesh.indices, false))
+                {
+                    return uploaded;
+                }
+            }
+
+            const std::string canonicalName = CanonicalPrimitiveName(modelPath);
+            if (const auto it = m_meshCache.find(canonicalName); it != m_meshCache.end())
+            {
+                return &it->second;
+            }
+        }
+
+        if (const auto it = m_meshCache.find("Cube"); it != m_meshCache.end())
+        {
+            return &it->second;
+        }
+
+        return nullptr;
+    }
+
+    ID3D11Buffer* DX11Device::UpdateSkinnedVertexBuffer(
+        std::span<const MeshVertex> cpuVerts,
+        std::span<const DirectX::XMFLOAT4X4> bonePalette)
+    {
+        if (!m_device || !m_context || cpuVerts.empty())
+        {
+            return nullptr;
+        }
+
+        const u32 requiredVerts = static_cast<u32>(cpuVerts.size());
+        if (!m_skinnedVertexBuffer || m_skinnedVertexCapacity < requiredVerts)
+        {
+            const u32 newCap = (std::max)(requiredVerts, (std::max)(m_skinnedVertexCapacity * 2u, 256u));
+            m_skinnedVertexBuffer.Reset();
+            D3D11_BUFFER_DESC vbDesc{};
+            vbDesc.ByteWidth = static_cast<UINT>(static_cast<usize>(newCap) * sizeof(DX11Vertex));
+            vbDesc.Usage = D3D11_USAGE_DYNAMIC;
+            vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            if (FAILED(m_device->CreateBuffer(&vbDesc, nullptr, &m_skinnedVertexBuffer)))
+            {
+                m_skinnedVertexCapacity = 0;
+                return nullptr;
+            }
+            m_skinnedVertexCapacity = newCap;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(m_context->Map(m_skinnedVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        {
+            return nullptr;
+        }
+
+        auto* dst = static_cast<DX11Vertex*>(mapped.pData);
+        for (usize i = 0; i < cpuVerts.size(); ++i)
+        {
+            const auto& v = cpuVerts[i];
+            const float pos[3] = { v.Position.x, v.Position.y, v.Position.z };
+            const float norm[3] = { v.Normal.x, v.Normal.y, v.Normal.z };
+            const float uv[2] = { v.UV.x, v.UV.y };
+            const float col[4] = { v.Color.x, v.Color.y, v.Color.z, v.Color.w };
+            const float tan[4] = { v.Tangent.x, v.Tangent.y, v.Tangent.z, v.Tangent.w };
+            const u32 bi[4] = { v.BoneIndices.x, v.BoneIndices.y, v.BoneIndices.z, v.BoneIndices.w };
+            const float bw[4] = { v.BoneWeights.x, v.BoneWeights.y, v.BoneWeights.z, v.BoneWeights.w };
+            DeformSingleVertex(pos, norm, uv, col, tan, bi, bw, bonePalette, dst[i]);
+        }
+
+        m_context->Unmap(m_skinnedVertexBuffer.Get(), 0);
+        return m_skinnedVertexBuffer.Get();
+    }
+
+    ID3D11Buffer* DX11Device::UpdateSkinnedVertexBuffer(
+        std::span<const DX11CpuVertex> cpuVerts,
+        std::span<const DirectX::XMFLOAT4X4> bonePalette)
+    {
+        if (!m_device || !m_context || cpuVerts.empty())
+        {
+            return nullptr;
+        }
+
+        const u32 requiredVerts = static_cast<u32>(cpuVerts.size());
+        if (!m_skinnedVertexBuffer || m_skinnedVertexCapacity < requiredVerts)
+        {
+            const u32 newCap = (std::max)(requiredVerts, (std::max)(m_skinnedVertexCapacity * 2u, 256u));
+            m_skinnedVertexBuffer.Reset();
+            D3D11_BUFFER_DESC vbDesc{};
+            vbDesc.ByteWidth = static_cast<UINT>(static_cast<usize>(newCap) * sizeof(DX11Vertex));
+            vbDesc.Usage = D3D11_USAGE_DYNAMIC;
+            vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            if (FAILED(m_device->CreateBuffer(&vbDesc, nullptr, &m_skinnedVertexBuffer)))
+            {
+                m_skinnedVertexCapacity = 0;
+                return nullptr;
+            }
+            m_skinnedVertexCapacity = newCap;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(m_context->Map(m_skinnedVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        {
+            return nullptr;
+        }
+
+        auto* dst = static_cast<DX11Vertex*>(mapped.pData);
+        for (usize i = 0; i < cpuVerts.size(); ++i)
+        {
+            const auto& v = cpuVerts[i];
+            DeformSingleVertex(v.p, v.n, v.uv, v.c, v.t, v.boneIndices, v.boneWeights, bonePalette, dst[i]);
+        }
+
+        m_context->Unmap(m_skinnedVertexBuffer.Get(), 0);
+        return m_skinnedVertexBuffer.Get();
     }
 
     const DX11MeshBuffers* DX11Device::GetOrCreateMesh(const MeshComponent& mc)
@@ -845,43 +1106,10 @@ namespace RL
 
         if (!mc.ModelPath.empty())
         {
-            if (const auto it = m_meshCache.find(mc.ModelPath); it != m_meshCache.end())
-            {
-                return &it->second;
-            }
-
-            std::filesystem::path resolvedPath = mc.ModelPath;
-            if (const auto vfsResolved = VFS::Resolve(mc.ModelPath); vfsResolved && std::filesystem::exists(*vfsResolved))
-            {
-                resolvedPath = *vfsResolved;
-            }
-            else if (const auto assetsResolved = VFS::Resolve("assets://" + mc.ModelPath); assetsResolved && std::filesystem::exists(*assetsResolved))
-            {
-                resolvedPath = *assetsResolved;
-            }
-
-            MeshAsset loadedMesh;
-            if (MeshAssetImporter::LoadCpuMesh(resolvedPath, loadedMesh) && !loadedMesh.vertices.empty())
-            {
-                if (const auto* uploaded = UploadCpuMeshVertices(mc.ModelPath, loadedMesh.vertices, loadedMesh.indices, false))
-                {
-                    return uploaded;
-                }
-            }
+            return GetOrCreateMeshByPath(mc.ModelPath);
         }
 
-        const std::string canonicalName = CanonicalPrimitiveName(mc.MeshName);
-        if (const auto it = m_meshCache.find(canonicalName); it != m_meshCache.end())
-        {
-            return &it->second;
-        }
-
-        if (const auto it = m_meshCache.find("Cube"); it != m_meshCache.end())
-        {
-            return &it->second;
-        }
-
-        return nullptr;
+        return GetOrCreateMeshByPath(mc.MeshName);
     }
 
     std::expected<void, std::string> DX11Device::InitBasicShaders()
@@ -904,6 +1132,8 @@ namespace RL
                 float4 SpotLightDir;
                 float4 SpotLightColor;
                 float4 MaterialParams;
+                float4 PostProcessParams;
+                float4 ViewportParams;
             };
 
             Texture2D diffuseTexture : register(t0);
@@ -980,6 +1210,35 @@ namespace RL
                 return shadow / 9.0f;
             }
 
+            float3 ACESFilm(float3 x)
+            {
+                float a = 2.51f;
+                float b = 0.03f;
+                float c = 2.43f;
+                float d = 0.59f;
+                float e = 0.14f;
+                return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+            }
+
+            float3 ApplyPostProcess(float3 rgb, float2 svPos)
+            {
+                if (PostProcessParams.z <= 0.5f)
+                {
+                    return rgb;
+                }
+                float3 linearColor = pow(max(rgb, 0.0f), 2.2f);
+                linearColor *= max(PostProcessParams.x, 0.0f);
+                float3 tonemapped = ACESFilm(linearColor);
+                float3 color = pow(saturate(tonemapped), 1.0f / 2.2f);
+
+                float2 screenUV = svPos * ViewportParams.zw;
+                float2 centered = screenUV - float2(0.5f, 0.5f);
+                float dist = length(centered);
+                float vignette = smoothstep(0.8f, 0.25f, dist);
+                color *= lerp(1.0f, vignette, saturate(PostProcessParams.y));
+                return color;
+            }
+
             float4 PSMain(PSIn input) : SV_Target
             {
                 float4 texColor = diffuseTexture.Sample(linearSampler, input.UV);
@@ -993,6 +1252,7 @@ namespace RL
                         float fogFactor = saturate(1.0f - exp(-FogParams.w * viewDist));
                         unlitColor.rgb = lerp(unlitColor.rgb, FogParams.rgb, fogFactor);
                     }
+                    unlitColor.rgb = ApplyPostProcess(unlitColor.rgb, input.Pos.xy);
                     return unlitColor;
                 }
 
@@ -1058,6 +1318,7 @@ namespace RL
                     float fogFactor = saturate(1.0f - exp(-FogParams.w * viewDist));
                     finalRgb = lerp(finalRgb, FogParams.rgb, fogFactor);
                 }
+                finalRgb = ApplyPostProcess(finalRgb, input.Pos.xy);
                 return float4(finalRgb, input.Color.a * texColor.a);
             }
 
@@ -1286,6 +1547,19 @@ namespace RL
     {
         if (!m_context || !m_vs || !m_ps || !m_cubeVertexBuffer || !m_constantBuffer) return;
 
+        m_lastRenderedSkinnedCount = 0;
+        m_lastRenderedParticleCount = 0;
+
+        const auto now = std::chrono::steady_clock::now();
+        f32 dt = 1.0f / 60.0f;
+        if (m_hasLastRenderTime)
+        {
+            const f32 elapsed = std::chrono::duration<f32>(now - m_lastRenderTime).count();
+            dt = std::clamp(elapsed, 0.0001f, 0.05f);
+        }
+        m_lastRenderTime = now;
+        m_hasLastRenderTime = true;
+
         const WorldEnvironment& env = scene.GetEnvironment();
         const bool sceneWireframe = (scene.GetShadingMode() == SceneShadingMode::Wireframe);
 
@@ -1295,7 +1569,9 @@ namespace RL
 
         const auto* transformPool = scene.GetPool<TransformComponent>();
         const auto* meshPool = scene.GetPool<MeshComponent>();
+        const auto* skinnedPool = scene.GetPool<SkinnedMeshComponent>();
         const auto* quadPool = scene.GetPool<QuadRenderComponent>();
+        const auto* particlePool = scene.GetPool<ParticleEmitterComponent>();
         if (!transformPool) return;
 
         DirectX::XMFLOAT4 lightDir{ 0.5f, -0.8f, 0.7f, 0.0f };
@@ -1394,6 +1670,21 @@ namespace RL
         DirectX::XMMATRIX lightProj = DirectX::XMMatrixOrthographicLH(40.0f, 40.0f, 1.0f, 100.0f);
         DirectX::XMMATRIX lightViewProj = DirectX::XMMatrixMultiply(lightView, lightProj);
 
+        const DirectX::XMFLOAT4 postProcessParams{
+            env.PostProcessEnabled ? env.Exposure : 1.0f,
+            env.PostProcessEnabled ? env.VignetteIntensity : 0.0f,
+            env.PostProcessEnabled ? 1.0f : 0.0f,
+            0.0f
+        };
+        const f32 safeW = static_cast<f32>((std::max)(m_width, 1u));
+        const f32 safeH = static_cast<f32>((std::max)(m_height, 1u));
+        const DirectX::XMFLOAT4 viewportParams{
+            safeW,
+            safeH,
+            1.0f / safeW,
+            1.0f / safeH
+        };
+
         auto writeCommonCB = [&](CBLayout* cb,
                                  const DirectX::XMMATRIX& wvp,
                                  const DirectX::XMMATRIX& world,
@@ -1414,9 +1705,11 @@ namespace RL
             cb->SpotLightDir = spotLightDir;
             cb->SpotLightColor = spotLightColor;
             cb->MaterialParams = materialParams;
+            cb->PostProcessParams = postProcessParams;
+            cb->ViewportParams = viewportParams;
         };
 
-        if (m_shadowDSV && m_shadowVS && meshPool)
+        if (m_shadowDSV && m_shadowVS && (meshPool || skinnedPool))
         {
             ID3D11ShaderResourceView* nullSRV = nullptr;
             m_context->PSSetShaderResources(1, 1, &nullSRV);
@@ -1451,43 +1744,118 @@ namespace RL
             ID3D11Buffer* cbs[] = { m_constantBuffer.Get() };
             m_context->VSSetConstantBuffers(0, 1, cbs);
 
-            const auto shadowEntities = meshPool->GetEntities();
-            const auto shadowMeshes = meshPool->GetData();
             const UINT stride = sizeof(DX11Vertex);
             const UINT offset = 0;
 
-            for (usize i = 0; i < shadowMeshes.size(); ++i)
+            if (meshPool)
             {
-                if (!shadowMeshes[i].IsVisible) continue;
-                Entity entity = scene.GetEntityFromIndex(shadowEntities[i]);
-                if (!scene.IsValid(entity)) continue;
+                const auto shadowEntities = meshPool->GetEntities();
+                const auto shadowMeshes = meshPool->GetData();
 
-                const DX11MeshBuffers* meshBuf = GetOrCreateMesh(shadowMeshes[i]);
-                if (!meshBuf || !meshBuf->vb || !meshBuf->ib || meshBuf->indexCount == 0 || meshBuf->isLineList)
+                for (usize i = 0; i < shadowMeshes.size(); ++i)
                 {
-                    continue;
+                    if (!shadowMeshes[i].IsVisible) continue;
+                    Entity entity = scene.GetEntityFromIndex(shadowEntities[i]);
+                    if (!scene.IsValid(entity)) continue;
+
+                    const DX11MeshBuffers* meshBuf = GetOrCreateMesh(shadowMeshes[i]);
+                    if (!meshBuf || !meshBuf->vb || !meshBuf->ib || meshBuf->indexCount == 0 || meshBuf->isLineList)
+                    {
+                        continue;
+                    }
+
+                    ID3D11Buffer* vbToBind = meshBuf->vb.Get();
+                    if (skinnedPool)
+                    {
+                        if (const auto* sk = skinnedPool->TryGet(shadowEntities[i]); sk && sk->IsVisible && !sk->BonePalette.empty())
+                        {
+                            ID3D11Buffer* skinnedVb = nullptr;
+                            if (shadowMeshes[i].MeshRef && !shadowMeshes[i].MeshRef->GetCpuVertices().empty())
+                            {
+                                skinnedVb = UpdateSkinnedVertexBuffer(shadowMeshes[i].MeshRef->GetCpuVertices(), sk->BonePalette);
+                            }
+                            else if (!meshBuf->cpuVertices.empty())
+                            {
+                                skinnedVb = UpdateSkinnedVertexBuffer(meshBuf->cpuVertices, sk->BonePalette);
+                            }
+                            if (skinnedVb)
+                            {
+                                vbToBind = skinnedVb;
+                            }
+                        }
+                    }
+
+                    ID3D11Buffer* vbs[] = { vbToBind };
+                    m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
+                    m_context->IASetIndexBuffer(meshBuf->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+
+                    DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
+
+                    D3D11_MAPPED_SUBRESOURCE mapped{};
+                    if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+                    {
+                        writeCommonCB(
+                            static_cast<CBLayout*>(mapped.pData),
+                            DirectX::XMMatrixMultiply(world, lightViewProj),
+                            world,
+                            shadowMeshes[i].Color,
+                            { 0.0f, 0.5f, 1.0f, 0.0f }
+                        );
+                        m_context->Unmap(m_constantBuffer.Get(), 0);
+                    }
+
+                    m_context->DrawIndexed(meshBuf->indexCount, 0, 0);
                 }
+            }
 
-                ID3D11Buffer* vbs[] = { meshBuf->vb.Get() };
-                m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
-                m_context->IASetIndexBuffer(meshBuf->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+            if (skinnedPool)
+            {
+                const auto shadowSkEntities = skinnedPool->GetEntities();
+                const auto shadowSkins = skinnedPool->GetData();
 
-                DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
-
-                D3D11_MAPPED_SUBRESOURCE mapped{};
-                if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+                for (usize i = 0; i < shadowSkins.size(); ++i)
                 {
-                    writeCommonCB(
-                        static_cast<CBLayout*>(mapped.pData),
-                        DirectX::XMMatrixMultiply(world, lightViewProj),
-                        world,
-                        shadowMeshes[i].Color,
-                        { 0.0f, 0.5f, 1.0f, 0.0f }
-                    );
-                    m_context->Unmap(m_constantBuffer.Get(), 0);
-                }
+                    if (!shadowSkins[i].IsVisible) continue;
+                    if (meshPool && meshPool->Has(shadowSkEntities[i])) continue;
+                    Entity entity = scene.GetEntityFromIndex(shadowSkEntities[i]);
+                    if (!scene.IsValid(entity)) continue;
 
-                m_context->DrawIndexed(meshBuf->indexCount, 0, 0);
+                    const DX11MeshBuffers* meshBuf = GetOrCreateMeshByPath(shadowSkins[i].ModelPath);
+                    if (!meshBuf || !meshBuf->vb || !meshBuf->ib || meshBuf->indexCount == 0 || meshBuf->isLineList)
+                    {
+                        continue;
+                    }
+
+                    ID3D11Buffer* vbToBind = meshBuf->vb.Get();
+                    if (!shadowSkins[i].BonePalette.empty() && !meshBuf->cpuVertices.empty())
+                    {
+                        if (ID3D11Buffer* skinnedVb = UpdateSkinnedVertexBuffer(meshBuf->cpuVertices, shadowSkins[i].BonePalette))
+                        {
+                            vbToBind = skinnedVb;
+                        }
+                    }
+
+                    ID3D11Buffer* vbs[] = { vbToBind };
+                    m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
+                    m_context->IASetIndexBuffer(meshBuf->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+
+                    DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
+
+                    D3D11_MAPPED_SUBRESOURCE mapped{};
+                    if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+                    {
+                        writeCommonCB(
+                            static_cast<CBLayout*>(mapped.pData),
+                            DirectX::XMMatrixMultiply(world, lightViewProj),
+                            world,
+                            DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f },
+                            { 0.0f, 0.5f, 1.0f, 0.0f }
+                        );
+                        m_context->Unmap(m_constantBuffer.Get(), 0);
+                    }
+
+                    m_context->DrawIndexed(meshBuf->indexCount, 0, 0);
+                }
             }
         }
 
@@ -1600,7 +1968,29 @@ namespace RL
                 m_context->IASetPrimitiveTopology(
                     meshBuf->isLineList ? D3D11_PRIMITIVE_TOPOLOGY_LINELIST : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-                ID3D11Buffer* vbs[] = { meshBuf->vb.Get() };
+                ID3D11Buffer* vbToBind = meshBuf->vb.Get();
+                if (skinnedPool)
+                {
+                    if (const auto* sk = skinnedPool->TryGet(entities[i]); sk && sk->IsVisible && !sk->BonePalette.empty())
+                    {
+                        ID3D11Buffer* skinnedVb = nullptr;
+                        if (meshes[i].MeshRef && !meshes[i].MeshRef->GetCpuVertices().empty())
+                        {
+                            skinnedVb = UpdateSkinnedVertexBuffer(meshes[i].MeshRef->GetCpuVertices(), sk->BonePalette);
+                        }
+                        else if (!meshBuf->cpuVertices.empty())
+                        {
+                            skinnedVb = UpdateSkinnedVertexBuffer(meshBuf->cpuVertices, sk->BonePalette);
+                        }
+                        if (skinnedVb)
+                        {
+                            vbToBind = skinnedVb;
+                            ++m_lastRenderedSkinnedCount;
+                        }
+                    }
+                }
+
+                ID3D11Buffer* vbs[] = { vbToBind };
                 m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
                 m_context->IASetIndexBuffer(meshBuf->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
 
@@ -1620,6 +2010,103 @@ namespace RL
                         objColor.w *= mat->BaseColor.w * mat->AlbedoColor.w;
                         matParams = { mat->Metallic, mat->Roughness, mat->AO, 0.0f };
                         if (texPath.empty() && !mat->TexturePath.empty())
+                        {
+                            texPath = mat->TexturePath;
+                        }
+                        if (!mat->NormalMapPath.empty())
+                        {
+                            normPath = mat->NormalMapPath;
+                        }
+                    }
+                }
+
+                ID3D11ShaderResourceView* texSrv = GetOrCreateTexture(texPath);
+                ID3D11ShaderResourceView* normSrv = m_fallbackNormalSRV.Get();
+                if (!normPath.empty())
+                {
+                    ID3D11ShaderResourceView* loadedNorm = GetOrCreateTexture(normPath);
+                    if (loadedNorm && loadedNorm != m_fallbackSRV.Get())
+                    {
+                        normSrv = loadedNorm;
+                    }
+                }
+                m_context->PSSetShaderResources(0, 1, &texSrv);
+                m_context->PSSetShaderResources(2, 1, &normSrv);
+
+                DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
+                DirectX::XMMATRIX wvp = world * viewProj;
+
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+                if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+                {
+                    writeCommonCB(static_cast<CBLayout*>(mapped.pData), wvp, world, objColor, matParams);
+                    m_context->Unmap(m_constantBuffer.Get(), 0);
+                }
+
+                m_context->DrawIndexed(meshBuf->indexCount, 0, 0);
+            }
+        }
+
+        if (skinnedPool)
+        {
+            const auto* materialPool = scene.GetPool<MaterialComponent>();
+            const auto skinnedEntities = skinnedPool->GetEntities();
+            const auto skinnedComps = skinnedPool->GetData();
+
+            for (usize i = 0; i < skinnedComps.size(); ++i)
+            {
+                if (!skinnedComps[i].IsVisible) continue;
+                if (meshPool && meshPool->Has(skinnedEntities[i])) continue;
+                Entity entity = scene.GetEntityFromIndex(skinnedEntities[i]);
+                if (!scene.IsValid(entity)) continue;
+
+                const DX11MeshBuffers* meshBuf = GetOrCreateMeshByPath(skinnedComps[i].ModelPath);
+                if (!meshBuf || !meshBuf->vb || !meshBuf->ib || meshBuf->indexCount == 0)
+                {
+                    continue;
+                }
+
+                if (sceneWireframe && m_wireframeRasterState)
+                {
+                    m_context->RSSetState(m_wireframeRasterState.Get());
+                }
+                else if (m_rasterState)
+                {
+                    m_context->RSSetState(m_rasterState.Get());
+                }
+
+                m_context->IASetPrimitiveTopology(
+                    meshBuf->isLineList ? D3D11_PRIMITIVE_TOPOLOGY_LINELIST : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                ID3D11Buffer* vbToBind = meshBuf->vb.Get();
+                if (!skinnedComps[i].BonePalette.empty() && !meshBuf->cpuVertices.empty())
+                {
+                    if (ID3D11Buffer* skinnedVb = UpdateSkinnedVertexBuffer(meshBuf->cpuVertices, skinnedComps[i].BonePalette))
+                    {
+                        vbToBind = skinnedVb;
+                        ++m_lastRenderedSkinnedCount;
+                    }
+                }
+
+                ID3D11Buffer* vbs[] = { vbToBind };
+                m_context->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
+                m_context->IASetIndexBuffer(meshBuf->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+
+                std::string texPath;
+                std::string normPath;
+                DirectX::XMFLOAT4 objColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+                DirectX::XMFLOAT4 matParams{ 0.0f, 0.5f, 1.0f, 0.0f };
+
+                if (materialPool)
+                {
+                    if (const auto* mat = materialPool->TryGet(skinnedEntities[i]))
+                    {
+                        objColor.x *= mat->BaseColor.x * mat->AlbedoColor.x;
+                        objColor.y *= mat->BaseColor.y * mat->AlbedoColor.y;
+                        objColor.z *= mat->BaseColor.z * mat->AlbedoColor.z;
+                        objColor.w *= mat->BaseColor.w * mat->AlbedoColor.w;
+                        matParams = { mat->Metallic, mat->Roughness, mat->AO, 0.0f };
+                        if (!mat->TexturePath.empty())
                         {
                             texPath = mat->TexturePath;
                         }
@@ -1719,6 +2206,217 @@ namespace RL
                 }
 
                 m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+            }
+        }
+
+        if (!particlePool)
+        {
+            m_emitterStates.clear();
+        }
+        else
+        {
+            const auto emitterEntities = particlePool->GetEntities();
+            const auto emitters = particlePool->GetData();
+            std::vector<u64> activeEmitterIds;
+            activeEmitterIds.reserve(emitters.size());
+
+            std::uniform_real_distribution<f32> distSigned(-1.0f, 1.0f);
+
+            for (usize i = 0; i < emitters.size(); ++i)
+            {
+                Entity entity = scene.GetEntityFromIndex(emitterEntities[i]);
+                if (!scene.IsValid(entity)) continue;
+
+                const u64 entityId = entity.GetID();
+                activeEmitterIds.push_back(entityId);
+
+                const ParticleEmitterComponent& emitter = emitters[i];
+                DX11EmitterState& state = m_emitterStates[entityId];
+                const u32 maxCap = (std::min)(emitter.MaxParticles, 512u);
+
+                usize pIdx = 0;
+                while (pIdx < state.Particles.size())
+                {
+                    DX11Particle& p = state.Particles[pIdx];
+                    p.Life -= dt;
+                    if (p.Life <= 0.0f)
+                    {
+                        state.Particles[pIdx] = state.Particles.back();
+                        state.Particles.pop_back();
+                        continue;
+                    }
+
+                    p.Velocity.x += emitter.Gravity.x * dt;
+                    p.Velocity.y += emitter.Gravity.y * dt;
+                    p.Velocity.z += emitter.Gravity.z * dt;
+
+                    p.Position.x += p.Velocity.x * dt;
+                    p.Position.y += p.Velocity.y * dt;
+                    p.Position.z += p.Velocity.z * dt;
+
+                    if (emitter.FloorBounce && p.Position.y < 0.0f)
+                    {
+                        p.Position.y = 0.0f;
+                        p.Velocity.y = -p.Velocity.y * 0.45f;
+                        p.Velocity.x *= 0.8f;
+                        p.Velocity.z *= 0.8f;
+                    }
+
+                    ++pIdx;
+                }
+
+                if (emitter.IsActive && maxCap > 0 && (emitter.Looping || !state.HasEmittedBurst))
+                {
+                    DirectX::XMFLOAT4X4 worldF{};
+                    DirectX::XMStoreFloat4x4(&worldF, scene.GetWorldMatrix(entity));
+                    const DirectX::XMFLOAT3 origin{ worldF._41, worldF._42, worldF._43 };
+
+                    const f32 safeRate = std::clamp(emitter.EmissionRate, 0.0f, 50000.0f);
+                    state.EmitAccumulator += safeRate * dt;
+                    u32 toSpawn = static_cast<u32>(state.EmitAccumulator);
+                    state.EmitAccumulator -= static_cast<f32>(toSpawn);
+                    if (!emitter.Looping && toSpawn > 0)
+                    {
+                        state.HasEmittedBurst = true;
+                    }
+
+                    const f32 safeLife = (std::max)(emitter.Lifetime, 0.01f);
+                    while (toSpawn > 0 && state.Particles.size() < maxCap)
+                    {
+                        DX11Particle p{};
+                        p.Position = origin;
+                        p.Velocity = {
+                            emitter.InitialVelocity.x + distSigned(m_particleRng) * emitter.VelocitySpread.x,
+                            emitter.InitialVelocity.y + distSigned(m_particleRng) * emitter.VelocitySpread.y,
+                            emitter.InitialVelocity.z + distSigned(m_particleRng) * emitter.VelocitySpread.z
+                        };
+                        p.MaxLife = safeLife;
+                        p.Life = safeLife;
+                        state.Particles.push_back(p);
+                        --toSpawn;
+                    }
+                }
+
+                if (state.Particles.size() > maxCap)
+                {
+                    state.Particles.resize(maxCap);
+                }
+            }
+
+            for (auto it = m_emitterStates.begin(); it != m_emitterStates.end();)
+            {
+                if (std::find(activeEmitterIds.begin(), activeEmitterIds.end(), it->first) == activeEmitterIds.end())
+                {
+                    it = m_emitterStates.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+
+            const auto quadIt = m_meshCache.find("Quad");
+            if (quadIt != m_meshCache.end() && quadIt->second.vb && quadIt->second.ib && quadIt->second.indexCount > 0)
+            {
+                const DX11MeshBuffers& quadBuf = quadIt->second;
+                const DirectX::XMMATRIX invView = DirectX::XMMatrixInverse(nullptr, scene.GetCamera().CalculateViewMatrix());
+                const DirectX::XMVECTOR camRight = DirectX::XMVectorSetW(DirectX::XMVector3Normalize(invView.r[0]), 0.0f);
+                const DirectX::XMVECTOR camUp = DirectX::XMVectorSetW(DirectX::XMVector3Normalize(invView.r[1]), 0.0f);
+                const DirectX::XMVECTOR camForward = DirectX::XMVectorSetW(DirectX::XMVector3Normalize(invView.r[2]), 0.0f);
+
+                bool boundParticlePipeline = false;
+                for (usize i = 0; i < emitters.size(); ++i)
+                {
+                    Entity entity = scene.GetEntityFromIndex(emitterEntities[i]);
+                    if (!scene.IsValid(entity)) continue;
+
+                    const auto stateIt = m_emitterStates.find(entity.GetID());
+                    if (stateIt == m_emitterStates.end() || stateIt->second.Particles.empty())
+                    {
+                        continue;
+                    }
+
+                    if (!boundParticlePipeline)
+                    {
+                        if (sceneWireframe && m_wireframeRasterState)
+                        {
+                            m_context->RSSetState(m_wireframeRasterState.Get());
+                        }
+                        else if (m_rasterState)
+                        {
+                            m_context->RSSetState(m_rasterState.Get());
+                        }
+
+                        if (m_alphaBlendState)
+                        {
+                            const float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                            m_context->OMSetBlendState(m_alphaBlendState.Get(), blendFactor, 0xFFFFFFFF);
+                        }
+
+                        if (m_depthReadOnlyState)
+                        {
+                            m_context->OMSetDepthStencilState(m_depthReadOnlyState.Get(), 1);
+                        }
+
+                        m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                        ID3D11Buffer* pVbs[] = { quadBuf.vb.Get() };
+                        m_context->IASetVertexBuffers(0, 1, pVbs, &stride, &offset);
+                        m_context->IASetIndexBuffer(quadBuf.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+
+                        ID3D11ShaderResourceView* texSrv = m_fallbackSRV.Get();
+                        ID3D11ShaderResourceView* normSrv = m_fallbackNormalSRV.Get();
+                        m_context->PSSetShaderResources(0, 1, &texSrv);
+                        m_context->PSSetShaderResources(2, 1, &normSrv);
+                        boundParticlePipeline = true;
+                    }
+
+                    const ParticleEmitterComponent& emitter = emitters[i];
+                    for (const DX11Particle& p : stateIt->second.Particles)
+                    {
+                        const f32 maxLife = (std::max)(0.001f, p.MaxLife);
+                        const f32 t = std::clamp(1.0f - (p.Life / maxLife), 0.0f, 1.0f);
+                        const f32 size = emitter.StartSize + (emitter.EndSize - emitter.StartSize) * t;
+                        const DirectX::XMFLOAT4 color{
+                            emitter.StartColor.x + (emitter.EndColor.x - emitter.StartColor.x) * t,
+                            emitter.StartColor.y + (emitter.EndColor.y - emitter.StartColor.y) * t,
+                            emitter.StartColor.z + (emitter.EndColor.z - emitter.StartColor.z) * t,
+                            emitter.StartColor.w + (emitter.EndColor.w - emitter.StartColor.w) * t
+                        };
+
+                        DirectX::XMMATRIX billboardWorld;
+                        billboardWorld.r[0] = DirectX::XMVectorScale(camRight, size);
+                        billboardWorld.r[1] = DirectX::XMVectorScale(camUp, size);
+                        billboardWorld.r[2] = DirectX::XMVectorScale(camForward, size);
+                        billboardWorld.r[3] = DirectX::XMVectorSet(p.Position.x, p.Position.y, p.Position.z, 1.0f);
+
+                        const DirectX::XMMATRIX wvp = billboardWorld * viewProj;
+
+                        D3D11_MAPPED_SUBRESOURCE mapped{};
+                        if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+                        {
+                            writeCommonCB(
+                                static_cast<CBLayout*>(mapped.pData),
+                                wvp,
+                                billboardWorld,
+                                color,
+                                DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 1.0f }
+                            );
+                            m_context->Unmap(m_constantBuffer.Get(), 0);
+                        }
+
+                        m_context->DrawIndexed(quadBuf.indexCount, 0, 0);
+                        ++m_lastRenderedParticleCount;
+                    }
+                }
+
+                if (boundParticlePipeline)
+                {
+                    m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+                    if (m_depthState)
+                    {
+                        m_context->OMSetDepthStencilState(m_depthState.Get(), 1);
+                    }
+                }
             }
         }
 

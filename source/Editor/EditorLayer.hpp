@@ -37,6 +37,15 @@ namespace RL
         DirectX11
     };
 
+    enum class WorkspacePreset : u8
+    {
+        Default = 0,
+        Modeling,
+        Animation,
+        Scripting,
+        Debug
+    };
+
     class EditorLayer
     {
     public:
@@ -87,6 +96,10 @@ namespace RL
 
         [[nodiscard]] Editor::PanelManager& GetPanelManager() noexcept { return m_panelManager; }
         void ToggleBlenderPanels() noexcept { m_showBlenderPanels = !m_showBlenderPanels; }
+        [[nodiscard]] bool AreBlenderPanelsVisible() const noexcept { return m_showBlenderPanels; }
+
+        void ApplyWorkspacePreset(WorkspacePreset preset);
+        [[nodiscard]] WorkspacePreset GetActiveWorkspacePreset() const noexcept { return m_activePreset; }
 
         [[nodiscard]] bool IsInitialized() const noexcept { return m_isInitialized; }
         [[nodiscard]] EditorBackend GetBackend() const noexcept { return m_backend; }
@@ -94,6 +107,9 @@ namespace RL
     private:
         void ApplyCyberpunkDarkStyle();
         void RenderDiagnosticsOverlay(const Timer& timer, const RHI::IRHIDevice& device, const Scene& scene, u32 renderedEntities);
+        void RegisterIniSettingsHandler();
+        void BuildDockLayout(WorkspacePreset preset);
+        void ApplyPresetPanelStates(WorkspacePreset preset);
 
     private:
         ComPtr<ID3D12DescriptorHeap> m_srvHeap;
@@ -106,9 +122,13 @@ namespace RL
         Editor::ContentBrowserPanel* m_contentBrowserPanel = nullptr;
         Editor::StatsPanel* m_statsPanel = nullptr;
         EditorBackend m_backend = EditorBackend::DirectX12;
+        WorkspacePreset m_activePreset = WorkspacePreset::Default;
+        u32 m_dockspaceId = 0;
         bool m_isInitialized = false;
         bool m_showDiagnostics = false;
         bool m_showBlenderPanels = false;
         bool m_dockLayoutInitialized = false;
+        bool m_pendingPresetApply = false;
+        bool m_hasLoadedPresetFromIni = false;
     };
 }

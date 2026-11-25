@@ -21,7 +21,7 @@ namespace RL
     using namespace DirectX;
 
     static constexpr u32 BINARY_MAGIC = 0x534C5221;
-    static constexpr u32 BINARY_VERSION = 3;
+    static constexpr u32 BINARY_VERSION = 4;
 
     enum ComponentMask : u32
     {
@@ -43,7 +43,8 @@ namespace RL
         Mask_Relationship    = 1u << 15,
         Mask_DistanceJoint   = 1u << 16,
         Mask_HingeJoint      = 1u << 17,
-        Mask_FixedJoint      = 1u << 18
+        Mask_FixedJoint      = 1u << 18,
+        Mask_CapsuleCollider = 1u << 19
     };
 
     enum class JsonType { Null, Bool, Number, String, Array, Object };
@@ -581,6 +582,17 @@ namespace RL
                 out << "      }";
             }
 
+            if (scene.HasComponent<CapsuleColliderComponent>(ent))
+            {
+                const auto& cc = scene.GetComponent<CapsuleColliderComponent>(ent);
+                out << ",\n      \"capsule_collider\": {\n";
+                out << "        \"radius\": " << cc.Radius << ",\n";
+                out << "        \"height\": " << cc.Height << ",\n";
+                out << "        \"offset\": [" << cc.Offset.x << ", " << cc.Offset.y << ", " << cc.Offset.z << "],\n";
+                out << "        \"is_trigger\": " << (cc.IsTrigger ? "true" : "false") << "\n";
+                out << "      }";
+            }
+
             if (scene.HasComponent<ParticleEmitterComponent>(ent))
             {
                 const auto& pe = scene.GetComponent<ParticleEmitterComponent>(ent);
@@ -892,6 +904,15 @@ namespace RL
                 if (const auto* it = scObj->Find("is_trigger"); it && it->IsBool()) sc.IsTrigger = it->BoolVal;
             }
 
+            if (const auto* ccObj = entNode.Find("capsule_collider"); ccObj && ccObj->IsObject())
+            {
+                auto& cc = scene.AddComponent<CapsuleColliderComponent>(entity);
+                if (const auto* r = ccObj->Find("radius"); r && r->IsNumber()) cc.Radius = (std::max)(0.001f, r->AsFloat());
+                if (const auto* h = ccObj->Find("height"); h && h->IsNumber()) cc.Height = (std::max)(0.001f, h->AsFloat());
+                cc.Offset = ReadVec3(ccObj->Find("offset"), cc.Offset);
+                if (const auto* it = ccObj->Find("is_trigger"); it && it->IsBool()) cc.IsTrigger = it->BoolVal;
+            }
+
             if (const auto* peObj = entNode.Find("particle_emitter"); peObj && peObj->IsObject())
             {
                 auto& pe = scene.AddComponent<ParticleEmitterComponent>(entity);
@@ -1135,6 +1156,7 @@ namespace RL
             if (scene.HasComponent<DistanceJointComponent>(ent)) mask |= Mask_DistanceJoint;
             if (scene.HasComponent<HingeJointComponent>(ent)) mask |= Mask_HingeJoint;
             if (scene.HasComponent<FixedJointComponent>(ent)) mask |= Mask_FixedJoint;
+            if (scene.HasComponent<CapsuleColliderComponent>(ent)) mask |= Mask_CapsuleCollider;
 
             WriteBinary(out, mask);
 
@@ -1354,6 +1376,16 @@ namespace RL
                 WriteBinary(out, fj.BreakForce);
                 const u8 ff = fj.IsBroken ? 1u : 0u;
                 WriteBinary(out, ff);
+            }
+
+            if (mask & Mask_CapsuleCollider)
+            {
+                const auto& cc = scene.GetComponent<CapsuleColliderComponent>(ent);
+                WriteBinary(out, cc.Radius);
+                WriteBinary(out, cc.Height);
+                WriteBinary(out, cc.Offset);
+                const u8 trig = cc.IsTrigger ? 1u : 0u;
+                WriteBinary(out, trig);
             }
         }
 
@@ -1703,6 +1735,19 @@ namespace RL
                 {
                     pendingFixedJoints.emplace_back(entity, targetId);
                 }
+            }
+
+            if (version >= 4 && (mask & Mask_CapsuleCollider))
+            {
+                auto& cc = scene.AddComponent<CapsuleColliderComponent>(entity);
+                u8 trig = 0;
+                ReadBinary(in, cc.Radius);
+                ReadBinary(in, cc.Height);
+                ReadBinary(in, cc.Offset);
+                ReadBinary(in, trig);
+                cc.Radius = (std::max)(0.001f, cc.Radius);
+                cc.Height = (std::max)(0.001f, cc.Height);
+                cc.IsTrigger = (trig != 0);
             }
         }
 

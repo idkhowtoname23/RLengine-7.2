@@ -88,11 +88,22 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     bool stressTestMode = false;
     u32 stressEntityCount = 5000;
     bool useDX11 = false;
+    bool playMode = false;
+    std::string playScenePath;
     for (int i = 1; i < argc; ++i)
     {
         if (std::string_view(argv[i]) == "--dx11")
         {
             useDX11 = true;
+        }
+        else if (std::string_view(argv[i]) == "--play")
+        {
+            playMode = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+            {
+                playScenePath = argv[++i];
+            }
+            RL_LOG_INFO("Running in standalone Play Mode (--play '{}').", playScenePath);
         }
         else if (std::string_view(argv[i]) == "--smoke-test")
         {
@@ -571,6 +582,87 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             }
 
             RL_LOG_INFO("Smoke test Alpha 4: Async AssetManager, Animation CrossFade, Binary v3 & Entity ScriptComponent validated successfully.");
+
+            PhysicsSystem a5Phys;
+            Scene a5Scene;
+            a5Scene.SetPhysicsSystem(&a5Phys);
+            Entity capEnt = a5Scene.CreateEntity("SmokeCapsule");
+            a5Scene.GetComponent<TransformComponent>(capEnt).Position = { 0.0f, 3.0f, 0.0f };
+            auto& capRb = a5Scene.AddComponent<RigidBodyComponent>(capEnt);
+            capRb.Type = BodyType::Dynamic;
+            auto& capCol = a5Scene.AddComponent<CapsuleColliderComponent>(capEnt);
+            capCol.Radius = 0.5f;
+            capCol.Height = 2.0f;
+            for (u32 step = 0; step < 60; ++step)
+            {
+                a5Phys.Step(a5Scene, 1.0f / 60.0f);
+            }
+            const auto& capPos = a5Scene.GetComponent<TransformComponent>(capEnt).Position;
+            const auto rayCapHit = a5Phys.Raycast(a5Scene, { -5.0f, capPos.y, 0.0f }, { 1.0f, 0.0f, 0.0f }, 20.0f);
+            if (!rayCapHit || rayCapHit->HitEntity != capEnt)
+            {
+                RL_LOG_FATAL("Alpha 5 CapsuleCollider physics/raycast validation failed (y={})", capPos.y);
+                return -104;
+            }
+
+            const auto ragdoll = PhysicsSystem::SpawnRagdollChain(a5Scene, { 4.0f, 5.0f, 0.0f });
+            if (ragdoll.size() != 4)
+            {
+                RL_LOG_FATAL("Alpha 5 SpawnRagdollChain expected 4 entities, got {}", ragdoll.size());
+                return -105;
+            }
+            a5Phys.Step(a5Scene, 1.0f / 60.0f);
+
+            const std::string v4J = (std::filesystem::temp_directory_path() / "rlengine_a5_v4.json").string();
+            const std::string v4B = (std::filesystem::temp_directory_path() / "rlengine_a5_v4.bin").string();
+            SceneSerializer::Save(a5Scene, v4J);
+            SceneSerializer::Save(a5Scene, v4B);
+            Scene loadV4J, loadV4B;
+            const bool okV4J = SceneSerializer::Load(loadV4J, nullptr, v4J);
+            const bool okV4B = SceneSerializer::Load(loadV4B, nullptr, v4B);
+            std::filesystem::remove(v4J, a4Ec);
+            std::filesystem::remove(v4B, a4Ec);
+            auto checkCapsuleSer = [](const Scene& s) -> bool {
+                for (Entity e : s.GetAliveEntities())
+                {
+                    if (s.GetComponent<TagComponent>(e).Tag == "SmokeCapsule")
+                    {
+                        const auto* cc = s.TryGetComponent<CapsuleColliderComponent>(e);
+                        return cc && std::abs(cc->Radius - 0.5f) < 1e-4f && std::abs(cc->Height - 2.0f) < 1e-4f;
+                    }
+                }
+                return false;
+            };
+            if (!okV4J || !okV4B || !checkCapsuleSer(loadV4J) || !checkCapsuleSer(loadV4B))
+            {
+                RL_LOG_FATAL("Alpha 5 Binary v4 / JSON CapsuleCollider serialization validation failed");
+                return -106;
+            }
+
+            ScriptEngine a5Lua;
+            if (const auto mainLua = VFS::Resolve("scripts://main.lua"); mainLua && a5Lua.Initialize(*mainLua, &a5Scene))
+            {
+                const f32 capYNow = a5Scene.GetComponent<TransformComponent>(capEnt).Position.y;
+                const std::string luaPhysicsCmd = std::format(
+                    "local hit, ent, hx, hy, hz, nx, ny, nz, dist = RL.Physics.Raycast(-5.0, {}, 0.0, 1.0, 0.0, 0.0, 20.0)\n"
+                    "if hit and ent then ent:ApplyImpulse(0.0, 5.0, 0.0) end\n"
+                    "_G.a5LuaRayOk = (hit == true and ent ~= nil and dist > 0.0)\n",
+                    capYNow
+                );
+                const bool luaRayRun = a5Lua.ExecuteString(luaPhysicsCmd);
+                lua_State* l5 = a5Lua.GetLuaState();
+                lua_getglobal(l5, "a5LuaRayOk");
+                const bool a5RayOk = luaRayRun && (lua_toboolean(l5, -1) != 0);
+                lua_pop(l5, 1);
+                a5Lua.Shutdown();
+                if (!a5RayOk || a5Scene.GetComponent<RigidBodyComponent>(capEnt).LinearVelocity.y <= 0.0f)
+                {
+                    RL_LOG_FATAL("Alpha 5 Lua RL.Physics.Raycast / ApplyImpulse validation failed");
+                    return -107;
+                }
+            }
+
+            RL_LOG_INFO("Smoke test Alpha 5: CapsuleCollider, RagdollChain, Binary v4 & Lua Raycast/ApplyImpulse validated successfully.");
         }
     }
 
@@ -663,21 +755,50 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         StressTest stressTest;
         LuaEntityBridge::SetStressTest(&stressTest);
 
-        Entity cube = scene.CreateEntity("Cube");
-        scene.AddComponent<MeshComponent>(cube, "Cube");
-        scene.AddComponent<MaterialComponent>(cube);
-        scene.GetComponent<TransformComponent>(cube).Position = { 0.0f, 0.0f, 0.0f };
+        if (playMode && !playScenePath.empty())
+        {
+            std::filesystem::path resolvedPlay = playScenePath;
+            if (const auto vfsPlay = VFS::Resolve(playScenePath)) resolvedPlay = *vfsPlay;
+            if (!SceneSerializer::Load(scene, nullptr, resolvedPlay.string()))
+            {
+                RL_LOG_WARN("Standalone Play Mode (--play DX11): could not load '{}', falling back to default scene.", playScenePath);
+            }
+            scriptEngine.StartEntityScripts(scene);
+        }
 
-        Entity child = scene.CreateEntity("ChildCube");
-        scene.AddComponent<MeshComponent>(child, "Sphere");
-        scene.GetComponent<TransformComponent>(child).Position = { 1.5f, 0.5f, 0.0f };
-        scene.SetParent(child, cube);
+        if (!playMode || scene.GetAliveEntityCount() == 0)
+        {
+            Entity cube = scene.CreateEntity("Cube");
+            scene.AddComponent<MeshComponent>(cube, "Cube");
+            scene.AddComponent<MaterialComponent>(cube);
+            scene.GetComponent<TransformComponent>(cube).Position = { 0.0f, 0.0f, 0.0f };
+
+            Entity child = scene.CreateEntity("ChildCube");
+            scene.AddComponent<MeshComponent>(child, "Sphere");
+            scene.GetComponent<TransformComponent>(child).Position = { 1.5f, 0.5f, 0.0f };
+            scene.SetParent(child, cube);
+        }
 
         if (smokeTest)
         {
             Entity planeEnt = scene.CreateEntity("SmokePlane");
             scene.AddComponent<MeshComponent>(planeEnt, "Plane");
             scene.GetComponent<TransformComponent>(planeEnt).Position = { 0.0f, -1.0f, 0.0f };
+
+            animationSystem.CreateProceduralTestRig("Alpha5DX11SkinRig");
+            Entity skelDx11 = scene.CreateEntity("SmokeSkelDX11");
+            scene.GetComponent<TransformComponent>(skelDx11).Position = { -2.0f, 0.5f, 0.0f };
+            scene.AddComponent<MeshComponent>(skelDx11, "Cube");
+            auto& sk11 = scene.AddComponent<SkinnedMeshComponent>(skelDx11);
+            sk11.ModelPath = "Alpha5DX11SkinRig";
+            sk11.Play("Wave");
+
+            Entity partDx11 = scene.CreateEntity("SmokeParticlesDX11");
+            scene.GetComponent<TransformComponent>(partDx11).Position = { 0.0f, 1.0f, 0.0f };
+            auto& pe11 = scene.AddComponent<ParticleEmitterComponent>(partDx11);
+            pe11.MaxParticles = 64;
+            pe11.EmissionRate = 120.0f;
+            scene.Update(0.05f);
         }
 
         Timer& timer = window.GetTimer();
@@ -704,7 +825,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
                 continue;
             }
 
-            if (editorLayer.GetSceneBuilder().IsSimulationRunning())
+            if (playMode || editorLayer.GetSceneBuilder().IsSimulationRunning())
             {
                 scriptEngine.Tick(dt);
                 scene.Update(dt);
@@ -716,7 +837,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             {
                 titleUpdateTimer = 0.0f;
                 const auto title = std::format(
-                    "RLengine 7.2 | GPU: {} | {}x{} | {} FPS ({:.2f} ms) | ECS Entities: {} [DirectX 11]",
+                    "RLengine 7.2{} | GPU: {} | {}x{} | {} FPS ({:.2f} ms) | ECS Entities: {} [DirectX 11]",
+                    playMode ? " [Runtime]" : "",
                     dx11.GetGpuDescription(),
                     window.GetWidth(),
                     window.GetHeight(),
@@ -727,17 +849,23 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
                 window.SetTitle(title);
             }
 
-            editorLayer.BeginFrame();
-            editorLayer.RenderUI(timer, dx11, scene, static_cast<u32>(scene.GetAliveEntityCount()), nullptr, nullptr, &scriptEngine);
+            if (!playMode)
+            {
+                editorLayer.BeginFrame();
+                editorLayer.RenderUI(timer, dx11, scene, static_cast<u32>(scene.GetAliveEntityCount()), nullptr, nullptr, &scriptEngine);
+            }
 
             dx11.BeginFrame();
             const auto& dx11Sky = scene.GetEnvironment().SkyColor;
             dx11.ClearRenderTarget(dx11Sky.x, dx11Sky.y, dx11Sky.z, dx11Sky.w);
             dx11.RenderScene(scene);
-            editorLayer.EndFrameDX11();
+            if (!playMode)
+            {
+                editorLayer.EndFrameDX11();
+            }
             dx11.EndFrame();
 
-            const bool vsync = editorLayer.GetSceneBuilder().IsVSyncEnabled();
+            const bool vsync = playMode ? true : editorLayer.GetSceneBuilder().IsVSyncEnabled();
             dx11.Present(vsync);
 
             if (smokeTest && timer.GetFrameCount() >= maxTestFrames)
@@ -747,6 +875,16 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
                 {
                     RL_LOG_FATAL("DirectX 11 smoke test failed: multi-mesh cache missing Sphere/Plane buffers");
                     return -96;
+                }
+                if (!dx11.HasSkinnedBufferCreated() || dx11.GetLastRenderedSkinnedCount() < 1)
+                {
+                    RL_LOG_FATAL("DirectX 11 Alpha 5 smoke test failed: SkinnedMesh parity did not render");
+                    return -108;
+                }
+                if (dx11.GetLastRenderedParticleCount() < 1)
+                {
+                    RL_LOG_FATAL("DirectX 11 Alpha 5 smoke test failed: ParticleEmitter parity rendered 0 particles");
+                    return -109;
                 }
                 const usize originalCount = scene.GetAliveEntityCount();
                 const std::string jsonPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.json").string();
@@ -1483,6 +1621,20 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         if (!luaAnimOk) return -98;
     }
 
+    if (playMode)
+    {
+        if (!playScenePath.empty())
+        {
+            std::filesystem::path resolvedPlay = playScenePath;
+            if (const auto vfsPlay = VFS::Resolve(playScenePath)) resolvedPlay = *vfsPlay;
+            if (!SceneSerializer::Load(scene, device.GetDevice(), resolvedPlay.string()))
+            {
+                RL_LOG_WARN("Standalone Play Mode (--play DX12): could not load '{}', keeping active scene.", playScenePath);
+            }
+        }
+        scriptEngine.StartEntityScripts(scene);
+    }
+
     Timer& timer = window.GetTimer();
     timer.Reset();
 
@@ -1515,7 +1667,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             continue;
         }
 
-        if (editorLayer.GetSceneBuilder().IsSimulationRunning())
+        if (playMode || editorLayer.GetSceneBuilder().IsSimulationRunning())
         {
             scriptEngine.Tick(dt);
             scene.Update(dt);
@@ -1527,7 +1679,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         {
             titleUpdateTimer = 0.0f;
             const auto title = std::format(
-                "RLengine 7.2 | GPU: {} | {}x{} | {} FPS ({:.2f} ms) | ECS Entities: {} (Rendered: {})",
+                "RLengine 7.2{} | GPU: {} | {}x{} | {} FPS ({:.2f} ms) | ECS Entities: {} (Rendered: {})",
+                playMode ? " [Runtime]" : "",
                 device.GetGpuDescription(),
                 window.GetWidth(),
                 window.GetHeight(),
@@ -1539,8 +1692,21 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             window.SetTitle(title);
         }
 
-        editorLayer.BeginFrame();
-        editorLayer.RenderUI(timer, device, scene, renderSystem.GetLastRenderedCount(), &renderSystem, &textureManager, &scriptEngine);
+        if (!playMode)
+        {
+            editorLayer.BeginFrame();
+            if (smokeTest && timer.GetFrameCount() == 1)
+            {
+                editorLayer.ApplyWorkspacePreset(WorkspacePreset::Scripting);
+                editorLayer.ApplyWorkspacePreset(WorkspacePreset::Default);
+                if (editorLayer.GetActiveWorkspacePreset() != WorkspacePreset::Default)
+                {
+                    RL_LOG_FATAL("Alpha 5 WorkspacePreset toggle failed");
+                    return -110;
+                }
+            }
+            editorLayer.RenderUI(timer, device, scene, renderSystem.GetLastRenderedCount(), &renderSystem, &textureManager, &scriptEngine);
+        }
 
         device.BeginFrame();
 
@@ -1558,11 +1724,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         const u32 currentFrameIndex = device.GetCurrentFrameIndex();
         scene.Render(cmdList, currentFrameIndex);
 
-        editorLayer.EndFrame(cmdList);
+        if (!playMode)
+        {
+            editorLayer.EndFrame(cmdList);
+        }
 
         device.EndFrame();
 
-        const bool vsync = editorLayer.GetSceneBuilder().IsVSyncEnabled();
+        const bool vsync = playMode ? true : editorLayer.GetSceneBuilder().IsVSyncEnabled();
         device.Present(vsync);
 
         if (smokeTest && timer.GetFrameCount() >= maxTestFrames)

@@ -3,6 +3,9 @@
 #endif
 
 #include "Editor/SceneBuilder.hpp"
+#include "Editor/EditorLayer.hpp"
+#include "Platform/FileSystem/VFS.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/Components.hpp"
 #include "Scene/SceneSerializer.hpp"
@@ -15,6 +18,7 @@
 #include "Core/Logger.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <vector>
 #include <filesystem>
 #include <format>
@@ -64,7 +68,7 @@ namespace RL
         const Timer& timer,
         RenderSystem* renderSystem,
         TextureManager* textureManager,
-        [[maybe_unused]] ScriptEngine* scriptEngine,
+        ScriptEngine* scriptEngine,
         StressTest& stressTest)
     {
         if (!m_isOpen)
@@ -94,14 +98,28 @@ namespace RL
         const float sidebarWidth = showSidebar ? 330.0f : 0.0f;
 
         const float pad = 3.0f;
-        const float topY = vp->WorkPos.y + pad;
-        const float bottomY = vp->WorkPos.y + vp->WorkSize.y - statusBarHeight - pad;
+        float topY = vp->WorkPos.y + pad;
+        float bottomY = vp->WorkPos.y + vp->WorkSize.y - statusBarHeight - pad;
         const float totalSidebarHeight = bottomY - topY;
 
-        const float vpAreaX = vp->WorkPos.x + pad;
+        float vpAreaX = vp->WorkPos.x + pad;
         const float vpHeaderHeight = 28.0f;
         const float sidebarX = vp->WorkPos.x + vp->WorkSize.x - sidebarWidth - pad;
-        const float vpAreaWidth = showSidebar ? (sidebarX - vpAreaX - pad) : (vp->WorkSize.x - pad * 2.0f);
+        float vpAreaWidth = showSidebar ? (sidebarX - vpAreaX - pad) : (vp->WorkSize.x - pad * 2.0f);
+
+        if (!showSidebar && m_editorLayer && m_editorLayer->AreBlenderPanelsVisible())
+        {
+            if (ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(ImHashStr("RLMainDockSpace")))
+            {
+                if (centralNode->Size.x > 64.0f && centralNode->Size.y > 64.0f)
+                {
+                    vpAreaX = centralNode->Pos.x + pad;
+                    vpAreaWidth = (std::max)(64.0f, centralNode->Size.x - pad * 2.0f);
+                    topY = (std::max)(topY, centralNode->Pos.y + pad);
+                    bottomY = (std::min)(bottomY, centralNode->Pos.y + centralNode->Size.y - pad);
+                }
+            }
+        }
 
         if (m_workspace != BlenderWorkspace::Scripting && m_workspace != BlenderWorkspace::Diagnostics)
         {
@@ -251,12 +269,23 @@ namespace RL
                         }
                     }
 
+                    ImGui::SetCursorScreenPos(ImVec2(vpAreaX, vpContentY));
+                    ImGui::Dummy(ImVec2(vpAreaWidth, vpContentHeight));
                     if (ImGui::BeginDragDropTarget())
                     {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
-                        {
-                            const char* pathStr = static_cast<const char*>(payload->Data);
-                            std::filesystem::path assetPath(pathStr);
+                        auto HandleAssetDrop = [&](const char* pathStr) {
+                            if (!pathStr || pathStr[0] == '\0')
+                            {
+                                return;
+                            }
+
+                            std::string rawPath(pathStr);
+                            std::filesystem::path assetPath(rawPath);
+                            if (const auto resolved = VFS::Resolve(rawPath))
+                            {
+                                assetPath = *resolved;
+                            }
+
                             auto ext = assetPath.extension().string();
                             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
@@ -301,63 +330,71 @@ namespace RL
                                     m_selectedEntity = e;
                                 }
                             }
-                            else if (ext == ".png" || ext == ".jpg" || ext == ".dds")
+                            else if (ext == ".lua")
                             {
-                                if (m_selectedEntity.IsValid() && scene.IsAlive(m_selectedEntity) && scene.HasComponent<MeshComponent>(m_selectedEntity))
+                                Entity target = m_selectedEntity;
+                                if (!target.IsValid() || !scene.IsAlive(target))
                                 {
-                                    auto& mc = scene.GetComponent<MeshComponent>(m_selectedEntity);
-                                    mc.TexturePath = assetPath.string();
+                                    target = scene.CreateEntity(assetPath.stem().string());
+                                    m_selectedEntity = target;
+                                }
+                                auto& sc = scene.HasComponent<ScriptComponent>(target)
+                                    ? scene.GetComponent<ScriptComponent>(target)
+                                    : scene.AddComponent<ScriptComponent>(target);
+                                sc.ScriptName = assetPath.stem().string();
+                                sc.ScriptPath = assetPath.string();
+                                sc.Enabled = true;
+                                if (scriptEngine)
+                                {
+                                    scriptEngine->ReloadEntityScript(target, scene);
                                 }
                             }
+                            else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".dds")
+                            {
+                                if (m_selectedEntity.IsValid() && scene.IsAlive(m_selectedEntity))
+                                {
+                                    if (scene.HasComponent<MaterialComponent>(m_selectedEntity))
+                                    {
+                                        scene.GetComponent<MaterialComponent>(m_selectedEntity).TexturePath = assetPath.string();
+                                    }
+                                    if (scene.HasComponent<MeshComponent>(m_selectedEntity))
+                                    {
+                                        scene.GetComponent<MeshComponent>(m_selectedEntity).TexturePath = assetPath.string();
+                                    }
+                                    if (!scene.HasComponent<MaterialComponent>(m_selectedEntity) &&
+                                        !scene.HasComponent<MeshComponent>(m_selectedEntity))
+                                    {
+                                        auto& mat = scene.AddComponent<MaterialComponent>(m_selectedEntity);
+                                        mat.TexturePath = assetPath.string();
+                                    }
+                                }
+                            }
+                            else if (ext == ".wav" || ext == ".mp3" || ext == ".ogg")
+                            {
+                                Entity target = m_selectedEntity;
+                                if (!target.IsValid() || !scene.IsAlive(target))
+                                {
+                                    target = scene.CreateEntity(assetPath.stem().string());
+                                    m_selectedEntity = target;
+                                }
+                                auto& as = scene.HasComponent<AudioSourceComponent>(target)
+                                    ? scene.GetComponent<AudioSourceComponent>(target)
+                                    : scene.AddComponent<AudioSourceComponent>(target);
+                                as.SoundPath = assetPath.string();
+                            }
+                        };
+
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("RL_ASSET_PATH"))
+                        {
+                            HandleAssetDrop(static_cast<const char*>(payload->Data));
+                        }
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                        {
+                            HandleAssetDrop(static_cast<const char*>(payload->Data));
                         }
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
                         {
-                            const char* pathStr = static_cast<const char*>(payload->Data);
-                            std::filesystem::path assetPath(pathStr);
-                            auto ext = assetPath.extension().string();
-                            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-                            if ((ext == ".gltf" || ext == ".glb") && m_dx12Device)
-                            {
-                                auto model = GLTFLoader::LoadFromFile(m_dx12Device, assetPath.string());
-                                if (model && !model->Meshes.empty())
-                                {
-                                    Entity e = scene.CreateEntity(assetPath.stem().string());
-                                    auto& mc = scene.AddComponent<MeshComponent>(e);
-                                    mc.MeshName = assetPath.stem().string();
-                                    mc.ModelPath = assetPath.string();
-                                    mc.MeshRef = model->Meshes[0];
-                                    if (!model->TexturePaths.empty())
-                                    {
-                                        mc.TexturePath = model->TexturePaths[0];
-                                    }
-                                    auto& mat = scene.AddComponent<MaterialComponent>(e);
-                                    if (!model->AlbedoTexturePath.empty())
-                                    {
-                                        mat.TexturePath = model->AlbedoTexturePath;
-                                    }
-                                    else if (!model->TexturePaths.empty())
-                                    {
-                                        mat.TexturePath = model->TexturePaths[0];
-                                    }
-                                    if (!model->NormalMapPath.empty())
-                                    {
-                                        mat.NormalMapPath = model->NormalMapPath;
-                                    }
-                                    if (!model->MetallicRoughnessMapPath.empty())
-                                    {
-                                        mat.MetallicRoughnessMapPath = model->MetallicRoughnessMapPath;
-                                    }
-                                    if (!model->EmissiveMapPath.empty())
-                                    {
-                                        mat.EmissiveMapPath = model->EmissiveMapPath;
-                                    }
-                                    mat.Metallic = model->Metallic;
-                                    mat.Roughness = model->Roughness;
-                                    mat.EmissiveColor = model->EmissiveColor;
-                                    m_selectedEntity = e;
-                                }
-                            }
+                            HandleAssetDrop(static_cast<const char*>(payload->Data));
                         }
                         ImGui::EndDragDropTarget();
                     }
@@ -656,6 +693,29 @@ namespace RL
                         hj.UpperAngleLimit = 1.5707963f;
                         m_selectedEntity = door;
                     }
+                    if (ImGui::MenuItem("Capsule Collider Entity"))
+                    {
+                        Entity e = scene.CreateEntity("CapsuleCollider");
+                        scene.AddComponent<MeshComponent>(e, "Cube");
+                        auto& rb = scene.AddComponent<RigidBodyComponent>(e);
+                        rb.Type = BodyType::Dynamic;
+                        rb.Mass = 1.0f;
+                        rb.Restitution = 0.5f;
+                        auto& cc = scene.AddComponent<CapsuleColliderComponent>(e);
+                        cc.Radius = 0.4f;
+                        cc.Height = 1.8f;
+                        auto& t = scene.GetComponent<TransformComponent>(e);
+                        t.Position.y = 4.0f;
+                        m_selectedEntity = e;
+                    }
+                    if (ImGui::MenuItem("Physics Ragdoll Chain"))
+                    {
+                        auto chain = PhysicsSystem::SpawnRagdollChain(scene, { 0.0f, 3.5f, 0.0f });
+                        if (!chain.empty())
+                        {
+                            m_selectedEntity = chain.front();
+                        }
+                    }
                     ImGui::EndMenu();
                 }
 
@@ -712,6 +772,32 @@ namespace RL
 
             if (ImGui::BeginMenu("Window"))
             {
+                if (ImGui::BeginMenu("Workspace Presets"))
+                {
+                    const auto activePreset = m_editorLayer ? m_editorLayer->GetActiveWorkspacePreset() : WorkspacePreset::Default;
+                    if (ImGui::MenuItem("Default", nullptr, activePreset == WorkspacePreset::Default))
+                    {
+                        if (m_editorLayer) m_editorLayer->ApplyWorkspacePreset(WorkspacePreset::Default);
+                    }
+                    if (ImGui::MenuItem("Modeling", nullptr, activePreset == WorkspacePreset::Modeling))
+                    {
+                        if (m_editorLayer) m_editorLayer->ApplyWorkspacePreset(WorkspacePreset::Modeling);
+                    }
+                    if (ImGui::MenuItem("Animation", nullptr, activePreset == WorkspacePreset::Animation))
+                    {
+                        if (m_editorLayer) m_editorLayer->ApplyWorkspacePreset(WorkspacePreset::Animation);
+                    }
+                    if (ImGui::MenuItem("Scripting", nullptr, activePreset == WorkspacePreset::Scripting))
+                    {
+                        if (m_editorLayer) m_editorLayer->ApplyWorkspacePreset(WorkspacePreset::Scripting);
+                    }
+                    if (ImGui::MenuItem("Debug", nullptr, activePreset == WorkspacePreset::Debug))
+                    {
+                        if (m_editorLayer) m_editorLayer->ApplyWorkspacePreset(WorkspacePreset::Debug);
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::Separator();
                 ImGui::MenuItem("Tool Shelf [T]", nullptr, &m_showToolShelf);
                 ImGui::MenuItem("Outliner", nullptr, &m_showHierarchy);
                 ImGui::MenuItem("Properties [N]", nullptr, &m_showInspector);
@@ -721,13 +807,20 @@ namespace RL
                 ImGui::Separator();
                 if (ImGui::MenuItem("Reset Layout to Default"))
                 {
-                    m_showToolShelf = true;
-                    m_showHierarchy = true;
-                    m_showInspector = true;
-                    m_showTimeline = true;
-                    m_showStatusBar = true;
-                    m_show3DCompass = true;
-                    m_workspace = BlenderWorkspace::Layout;
+                    if (m_editorLayer)
+                    {
+                        m_editorLayer->ApplyWorkspacePreset(WorkspacePreset::Default);
+                    }
+                    else
+                    {
+                        m_showToolShelf = true;
+                        m_showHierarchy = true;
+                        m_showInspector = true;
+                        m_showTimeline = true;
+                        m_showStatusBar = true;
+                        m_show3DCompass = true;
+                        m_workspace = BlenderWorkspace::Layout;
+                    }
                 }
                 ImGui::EndMenu();
             }
@@ -1563,6 +1656,7 @@ namespace RL
                             if (ImGui::MenuItem("RigidBodyComponent") && !scene.HasComponent<RigidBodyComponent>(m_selectedEntity)) { scene.AddComponent<RigidBodyComponent>(m_selectedEntity); }
                             if (ImGui::MenuItem("BoxColliderComponent") && !scene.HasComponent<BoxColliderComponent>(m_selectedEntity)) { scene.AddComponent<BoxColliderComponent>(m_selectedEntity); }
                             if (ImGui::MenuItem("SphereColliderComponent") && !scene.HasComponent<SphereColliderComponent>(m_selectedEntity)) { scene.AddComponent<SphereColliderComponent>(m_selectedEntity); }
+                            if (ImGui::MenuItem("CapsuleColliderComponent") && !scene.HasComponent<CapsuleColliderComponent>(m_selectedEntity)) { scene.AddComponent<CapsuleColliderComponent>(m_selectedEntity); }
                             if (ImGui::MenuItem("DistanceJointComponent") && !scene.HasComponent<DistanceJointComponent>(m_selectedEntity)) { scene.AddComponent<DistanceJointComponent>(m_selectedEntity); }
                             if (ImGui::MenuItem("HingeJointComponent") && !scene.HasComponent<HingeJointComponent>(m_selectedEntity)) { scene.AddComponent<HingeJointComponent>(m_selectedEntity); }
                             if (ImGui::MenuItem("FixedJointComponent") && !scene.HasComponent<FixedJointComponent>(m_selectedEntity)) { scene.AddComponent<FixedJointComponent>(m_selectedEntity); }
@@ -1671,6 +1765,18 @@ namespace RL
                                 ImGui::DragFloat("Radius", &sc.Radius, 0.05f, 0.01f, 100.0f);
                                 ImGui::DragFloat3("Offset##Sphere", &sc.Offset.x, 0.05f);
                                 ImGui::Checkbox("Is Trigger##Sphere", &sc.IsTrigger);
+                            }
+                        }
+
+                        if (scene.HasComponent<CapsuleColliderComponent>(m_selectedEntity))
+                        {
+                            if (ImGui::CollapsingHeader("Capsule Collider Component", ImGuiTreeNodeFlags_DefaultOpen))
+                            {
+                                auto& cc = scene.GetComponent<CapsuleColliderComponent>(m_selectedEntity);
+                                ImGui::DragFloat("Radius##Capsule", &cc.Radius, 0.05f, 0.01f, 100.0f);
+                                ImGui::DragFloat("Height##Capsule", &cc.Height, 0.05f, 0.01f, 100.0f);
+                                ImGui::DragFloat3("Offset##Capsule", &cc.Offset.x, 0.05f);
+                                ImGui::Checkbox("Is Trigger##Capsule", &cc.IsTrigger);
                             }
                         }
 
@@ -2222,6 +2328,31 @@ namespace RL
                     hj.LowerAngleLimit = -1.5707963f;
                     hj.UpperAngleLimit = 1.5707963f;
                     m_selectedEntity = door;
+                    m_openAddPopup = false;
+                }
+                if (ImGui::MenuItem("Capsule Collider Entity"))
+                {
+                    Entity e = scene.CreateEntity("CapsuleCollider");
+                    scene.AddComponent<MeshComponent>(e, "Cube");
+                    auto& rb = scene.AddComponent<RigidBodyComponent>(e);
+                    rb.Type = BodyType::Dynamic;
+                    rb.Mass = 1.0f;
+                    rb.Restitution = 0.5f;
+                    auto& cc = scene.AddComponent<CapsuleColliderComponent>(e);
+                    cc.Radius = 0.4f;
+                    cc.Height = 1.8f;
+                    auto& t = scene.GetComponent<TransformComponent>(e);
+                    t.Position.y = 4.0f;
+                    m_selectedEntity = e;
+                    m_openAddPopup = false;
+                }
+                if (ImGui::MenuItem("Physics Ragdoll Chain"))
+                {
+                    auto chain = PhysicsSystem::SpawnRagdollChain(scene, { 0.0f, 3.5f, 0.0f });
+                    if (!chain.empty())
+                    {
+                        m_selectedEntity = chain.front();
+                    }
                     m_openAddPopup = false;
                 }
                 ImGui::EndMenu();

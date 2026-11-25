@@ -84,6 +84,7 @@ namespace RL::Editor
             DrawRigidBodyComponent(ent);
             DrawBoxColliderComponent(ent);
             DrawSphereColliderComponent(ent);
+            DrawCapsuleColliderComponent(ent);
             DrawDistanceJointComponent(ent);
             DrawHingeJointComponent(ent);
             DrawFixedJointComponent(ent);
@@ -146,6 +147,11 @@ namespace RL::Editor
                 {
                     if (!m_scene->HasComponent<SphereColliderComponent>(ent))
                         m_scene->AddComponent<SphereColliderComponent>(ent);
+                }
+                if (ImGui::MenuItem("Capsule Collider"))
+                {
+                    if (!m_scene->HasComponent<CapsuleColliderComponent>(ent))
+                        m_scene->AddComponent<CapsuleColliderComponent>(ent);
                 }
                 if (ImGui::MenuItem("Distance Joint"))
                 {
@@ -539,6 +545,33 @@ namespace RL::Editor
 
             LabeledField("Is Trigger", 90.0f);
             ImGui::Checkbox("##sc_trig", &sc.IsTrigger);
+            ImGui::Spacing();
+        }
+
+        void DrawCapsuleColliderComponent(Entity ent)
+        {
+            if (!m_scene->HasComponent<CapsuleColliderComponent>(ent)) return;
+
+            bool remove = false;
+            if (!ComponentHeader("Capsule Collider", &remove)) return;
+            if (remove) { m_scene->RemoveComponent<CapsuleColliderComponent>(ent); return; }
+
+            auto& cc = m_scene->GetComponent<CapsuleColliderComponent>(ent);
+            ImGui::Spacing();
+            LabeledField("Radius", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##cc_rad", &cc.Radius, 0.05f, 0.01f, 100.0f);
+
+            LabeledField("Height", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##cc_height", &cc.Height, 0.05f, 0.01f, 100.0f);
+
+            LabeledField("Offset", 90.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##cc_offset", &cc.Offset.x, 0.05f);
+
+            LabeledField("Is Trigger", 90.0f);
+            ImGui::Checkbox("##cc_trig", &cc.IsTrigger);
             ImGui::Spacing();
         }
 

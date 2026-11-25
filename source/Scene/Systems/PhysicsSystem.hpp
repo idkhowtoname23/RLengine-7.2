@@ -69,6 +69,10 @@ namespace RL
             const DirectX::XMFLOAT3& direction,
             f32 maxDistance);
 
+        static std::vector<Entity> SpawnRagdollChain(
+            Scene& scene,
+            const DirectX::XMFLOAT3& origin = { 0.0f, 3.5f, 0.0f });
+
         void CaptureSnapshot(Scene& scene);
         void RestoreSnapshot(Scene& scene);
         void ClearSnapshot() noexcept;

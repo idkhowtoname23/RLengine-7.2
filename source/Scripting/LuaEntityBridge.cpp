@@ -1,6 +1,7 @@
 #include "Scripting/LuaEntityBridge.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/Components.hpp"
+#include "Scene/Systems/PhysicsSystem.hpp"
 #include "Scene/StressTest.hpp"
 #include "Graphics/DX12/TextureManager.hpp"
 #include "Graphics/DX12/DX12Texture.hpp"
@@ -11,6 +12,7 @@
 #include "Core/Events/CommonEvents.hpp"
 
 #include <lua.hpp>
+#include <algorithm>
 #include <format>
 #include <string>
 #include <cstring>
@@ -114,6 +116,9 @@ namespace RL
             lua_pushcfunction(L, &LuaEntityBridge::Entity_GetIndex);
             lua_setfield(L, -2, "GetIndex");
 
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_ApplyImpulse);
+            lua_setfield(L, -2, "ApplyImpulse");
+
             lua_setfield(L, -2, "__index");
 
             lua_pushcfunction(L, &LuaEntityBridge::Entity_ToString);
@@ -199,6 +204,13 @@ namespace RL
         lua_setfield(L, -2, "Clear");
 
         lua_setfield(L, -2, "Events");
+
+        lua_newtable(L);
+
+        lua_pushcfunction(L, &LuaEntityBridge::Physics_Raycast);
+        lua_setfield(L, -2, "Raycast");
+
+        lua_setfield(L, -2, "Physics");
 
         lua_pop(L, 1);
 
@@ -904,6 +916,92 @@ namespace RL
         const Entity ent(ud->entityID);
         lua_pushinteger(L, static_cast<lua_Integer>(ent.GetIndex()));
         return 1;
+    }
+
+    int LuaEntityBridge::Entity_ApplyImpulse(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const f32 ix = static_cast<f32>(luaL_checknumber(L, 2));
+        const f32 iy = static_cast<f32>(luaL_checknumber(L, 3));
+        const f32 iz = static_cast<f32>(luaL_optnumber(L, 4, 0.0));
+
+        if (auto* rb = s_scene->TryGetComponent<RigidBodyComponent>(Entity(ud->entityID)))
+        {
+            const f32 invMass = 1.0f / std::max(0.001f, rb->Mass);
+            rb->LinearVelocity.x += ix * invMass;
+            rb->LinearVelocity.y += iy * invMass;
+            rb->LinearVelocity.z += iz * invMass;
+        }
+        return 0;
+    }
+
+    int LuaEntityBridge::Physics_Raycast(lua_State* L)
+    {
+        const f32 ox = static_cast<f32>(luaL_checknumber(L, 1));
+        const f32 oy = static_cast<f32>(luaL_checknumber(L, 2));
+        const f32 oz = static_cast<f32>(luaL_checknumber(L, 3));
+        const f32 dx = static_cast<f32>(luaL_checknumber(L, 4));
+        const f32 dy = static_cast<f32>(luaL_checknumber(L, 5));
+        const f32 dz = static_cast<f32>(luaL_checknumber(L, 6));
+        const f32 maxDist = static_cast<f32>(luaL_optnumber(L, 7, 1000.0));
+
+        if (!s_scene)
+        {
+            lua_pushboolean(L, 0);
+            lua_pushnil(L);
+            lua_pushnumber(L, 0.0);
+            lua_pushnumber(L, 0.0);
+            lua_pushnumber(L, 0.0);
+            lua_pushnumber(L, 0.0);
+            lua_pushnumber(L, 0.0);
+            lua_pushnumber(L, 0.0);
+            lua_pushnumber(L, 0.0);
+            return 9;
+        }
+
+        const DirectX::XMFLOAT3 origin{ ox, oy, oz };
+        const DirectX::XMFLOAT3 direction{ dx, dy, dz };
+
+        std::optional<RaycastHit> hit;
+        if (auto* physics = s_scene->GetPhysicsSystem())
+        {
+            hit = physics->Raycast(*s_scene, origin, direction, maxDist);
+        }
+        else
+        {
+            PhysicsSystem tempPhysics;
+            hit = tempPhysics.Raycast(*s_scene, origin, direction, maxDist);
+        }
+
+        if (hit.has_value())
+        {
+            lua_pushboolean(L, 1);
+            PushEntity(L, hit->HitEntity);
+            lua_pushnumber(L, static_cast<lua_Number>(hit->Point.x));
+            lua_pushnumber(L, static_cast<lua_Number>(hit->Point.y));
+            lua_pushnumber(L, static_cast<lua_Number>(hit->Point.z));
+            lua_pushnumber(L, static_cast<lua_Number>(hit->Normal.x));
+            lua_pushnumber(L, static_cast<lua_Number>(hit->Normal.y));
+            lua_pushnumber(L, static_cast<lua_Number>(hit->Normal.z));
+            lua_pushnumber(L, static_cast<lua_Number>(hit->Distance));
+            return 9;
+        }
+
+        lua_pushboolean(L, 0);
+        lua_pushnil(L);
+        lua_pushnumber(L, 0.0);
+        lua_pushnumber(L, 0.0);
+        lua_pushnumber(L, 0.0);
+        lua_pushnumber(L, 0.0);
+        lua_pushnumber(L, 0.0);
+        lua_pushnumber(L, 0.0);
+        lua_pushnumber(L, 0.0);
+        return 9;
     }
 
     int LuaEntityBridge::Entity_ToString(lua_State* L)

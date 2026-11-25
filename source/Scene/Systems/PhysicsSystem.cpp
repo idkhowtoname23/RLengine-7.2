@@ -105,6 +105,23 @@ namespace RL
             f32 Radius = 0.5f;
         };
 
+        struct Capsule
+        {
+            DirectX::XMFLOAT3 A{ 0.0f, 0.0f, 0.0f };
+            DirectX::XMFLOAT3 B{ 0.0f, 0.0f, 0.0f };
+            DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
+            DirectX::XMFLOAT3 Axis{ 0.0f, 1.0f, 0.0f };
+            f32 Radius = 0.4f;
+            f32 HalfCylinder = 0.5f;
+        };
+
+        enum class ColliderShapeType : u8
+        {
+            Box = 0,
+            Sphere,
+            Capsule
+        };
+
         struct ContactInfo
         {
             DirectX::XMFLOAT3 Point{ 0.0f, 0.0f, 0.0f };
@@ -120,11 +137,13 @@ namespace RL
             RigidBodyComponent* RigidBody = nullptr;
             const BoxColliderComponent* BoxComp = nullptr;
             const SphereColliderComponent* SphereComp = nullptr;
-            bool IsSphere = false;
+            const CapsuleColliderComponent* CapsuleComp = nullptr;
+            ColliderShapeType ShapeType = ColliderShapeType::Box;
             bool IsTrigger = false;
             bool IsDynamic = false;
             OBB BoxShape{};
             Sphere SphereShape{};
+            Capsule CapsuleShape{};
             f32 BoundingRadius = 0.5f;
             DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
         };
@@ -188,6 +207,115 @@ namespace RL
             return s;
         }
 
+        inline Capsule BuildCapsule(const TransformComponent& tr, const CapsuleColliderComponent* cap) noexcept
+        {
+            Capsule c;
+            const f32 baseRadius = cap ? cap->Radius : 0.4f;
+            const f32 baseHeight = cap ? cap->Height : 1.8f;
+            const DirectX::XMFLOAT3 offset = cap ? cap->Offset : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+
+            const f32 radialScale = std::max(std::abs(tr.Scale.x), std::abs(tr.Scale.z));
+            c.Radius = std::max(1e-4f, baseRadius * radialScale);
+            const f32 scaledHeight = std::abs(baseHeight * tr.Scale.y);
+            c.HalfCylinder = std::max(0.0f, 0.5f * scaledHeight - c.Radius);
+
+            const auto rot = DirectX::XMMatrixRotationRollPitchYaw(tr.Rotation.x, tr.Rotation.y, tr.Rotation.z);
+            const DirectX::XMFLOAT3 axisX{ DirectX::XMVectorGetX(rot.r[0]), DirectX::XMVectorGetY(rot.r[0]), DirectX::XMVectorGetZ(rot.r[0]) };
+            const DirectX::XMFLOAT3 axisY{ DirectX::XMVectorGetX(rot.r[1]), DirectX::XMVectorGetY(rot.r[1]), DirectX::XMVectorGetZ(rot.r[1]) };
+            const DirectX::XMFLOAT3 axisZ{ DirectX::XMVectorGetX(rot.r[2]), DirectX::XMVectorGetY(rot.r[2]), DirectX::XMVectorGetZ(rot.r[2]) };
+            c.Axis = Normalize(axisY);
+
+            const DirectX::XMFLOAT3 scaledOffset{
+                offset.x * tr.Scale.x,
+                offset.y * tr.Scale.y,
+                offset.z * tr.Scale.z
+            };
+
+            c.Center = {
+                tr.Position.x + axisX.x * scaledOffset.x + axisY.x * scaledOffset.y + axisZ.x * scaledOffset.z,
+                tr.Position.y + axisX.y * scaledOffset.x + axisY.y * scaledOffset.y + axisZ.y * scaledOffset.z,
+                tr.Position.z + axisX.z * scaledOffset.x + axisY.z * scaledOffset.y + axisZ.z * scaledOffset.z
+            };
+
+            c.A = Sub(c.Center, Mul(c.Axis, c.HalfCylinder));
+            c.B = Add(c.Center, Mul(c.Axis, c.HalfCylinder));
+            return c;
+        }
+
+        inline DirectX::XMFLOAT3 ClosestPointOnSegment(
+            const DirectX::XMFLOAT3& p,
+            const DirectX::XMFLOAT3& a,
+            const DirectX::XMFLOAT3& b) noexcept
+        {
+            const DirectX::XMFLOAT3 ab = Sub(b, a);
+            const f32 lenSq = Dot(ab, ab);
+            if (lenSq < 1e-8f)
+            {
+                return a;
+            }
+            const f32 t = std::clamp(Dot(Sub(p, a), ab) / lenSq, 0.0f, 1.0f);
+            return Add(a, Mul(ab, t));
+        }
+
+        inline void ClosestPointsBetweenSegments(
+            const DirectX::XMFLOAT3& a1,
+            const DirectX::XMFLOAT3& b1,
+            const DirectX::XMFLOAT3& a2,
+            const DirectX::XMFLOAT3& b2,
+            DirectX::XMFLOAT3& outP1,
+            DirectX::XMFLOAT3& outP2) noexcept
+        {
+            const DirectX::XMFLOAT3 d1 = Sub(b1, a1);
+            const DirectX::XMFLOAT3 d2 = Sub(b2, a2);
+            const DirectX::XMFLOAT3 r = Sub(a1, a2);
+            const f32 a = Dot(d1, d1);
+            const f32 e = Dot(d2, d2);
+            const f32 f = Dot(d2, r);
+
+            f32 s = 0.0f;
+            f32 t = 0.0f;
+
+            if (a <= 1e-8f && e <= 1e-8f)
+            {
+                s = 0.0f;
+                t = 0.0f;
+            }
+            else if (a <= 1e-8f)
+            {
+                s = 0.0f;
+                t = std::clamp(f / e, 0.0f, 1.0f);
+            }
+            else
+            {
+                const f32 c = Dot(d1, r);
+                if (e <= 1e-8f)
+                {
+                    t = 0.0f;
+                    s = std::clamp(-c / a, 0.0f, 1.0f);
+                }
+                else
+                {
+                    const f32 b = Dot(d1, d2);
+                    const f32 denom = a * e - b * b;
+                    s = (denom != 0.0f) ? std::clamp((b * f - c * e) / denom, 0.0f, 1.0f) : 0.0f;
+                    t = (b * s + f) / e;
+                    if (t < 0.0f)
+                    {
+                        t = 0.0f;
+                        s = std::clamp(-c / a, 0.0f, 1.0f);
+                    }
+                    else if (t > 1.0f)
+                    {
+                        t = 1.0f;
+                        s = std::clamp((b - c) / a, 0.0f, 1.0f);
+                    }
+                }
+            }
+
+            outP1 = Add(a1, Mul(d1, s));
+            outP2 = Add(a2, Mul(d2, t));
+        }
+
         inline DirectX::XMFLOAT3 TransformInverseInertia(
             const DirectX::XMFLOAT3& torque,
             const DirectX::XMFLOAT3 axes[3],
@@ -229,6 +357,7 @@ namespace RL
             const TransformComponent& tr,
             const BoxColliderComponent* box,
             const SphereColliderComponent* sphere,
+            const CapsuleColliderComponent* capsule,
             f32 mass) noexcept
         {
             const f32 m = std::max(0.001f, mass);
@@ -239,6 +368,18 @@ namespace RL
                 const f32 Isph = 0.4f * m * r * r;
                 const f32 invI = 1.0f / std::max(1e-4f, Isph);
                 return Mul(torque, invI);
+            }
+            if (capsule && !box && !sphere)
+            {
+                const Capsule c = BuildCapsule(tr, capsule);
+                const auto rot = DirectX::XMMatrixRotationRollPitchYaw(tr.Rotation.x, tr.Rotation.y, tr.Rotation.z);
+                const DirectX::XMFLOAT3 axes[3]{
+                    { DirectX::XMVectorGetX(rot.r[0]), DirectX::XMVectorGetY(rot.r[0]), DirectX::XMVectorGetZ(rot.r[0]) },
+                    { DirectX::XMVectorGetX(rot.r[1]), DirectX::XMVectorGetY(rot.r[1]), DirectX::XMVectorGetZ(rot.r[1]) },
+                    { DirectX::XMVectorGetX(rot.r[2]), DirectX::XMVectorGetY(rot.r[2]), DirectX::XMVectorGetZ(rot.r[2]) }
+                };
+                const DirectX::XMFLOAT3 extents{ c.Radius, c.HalfCylinder + c.Radius, c.Radius };
+                return TransformInverseInertia(torque, axes, extents, m);
             }
             OBB obb = BuildOBB(tr, box);
             return TransformInverseInertia(torque, obb.Axes, obb.Extents, m);
@@ -638,6 +779,263 @@ namespace RL
 
             return {};
         }
+
+        inline ContactInfo CheckCapsuleSphere(const Capsule& a, const Sphere& b) noexcept
+        {
+            const DirectX::XMFLOAT3 pA = ClosestPointOnSegment(b.Center, a.A, a.B);
+            const DirectX::XMFLOAT3 D = Sub(b.Center, pA);
+            const f32 distSq = Dot(D, D);
+            const f32 minDist = a.Radius + b.Radius;
+
+            if (distSq < minDist * minDist)
+            {
+                ContactInfo info;
+                info.HasCollision = true;
+                if (distSq > 1e-8f)
+                {
+                    const f32 dist = std::sqrt(distSq);
+                    info.Normal = Mul(D, 1.0f / dist);
+                    info.Penetration = minDist - dist;
+                }
+                else
+                {
+                    info.Normal = { 0.0f, 1.0f, 0.0f };
+                    info.Penetration = minDist;
+                }
+                info.Point = Add(pA, Mul(info.Normal, a.Radius));
+                return info;
+            }
+
+            return {};
+        }
+
+        inline ContactInfo CheckCapsuleCapsule(const Capsule& a, const Capsule& b) noexcept
+        {
+            DirectX::XMFLOAT3 pA{};
+            DirectX::XMFLOAT3 pB{};
+            ClosestPointsBetweenSegments(a.A, a.B, b.A, b.B, pA, pB);
+
+            const DirectX::XMFLOAT3 D = Sub(pB, pA);
+            const f32 distSq = Dot(D, D);
+            const f32 minDist = a.Radius + b.Radius;
+
+            if (distSq < minDist * minDist)
+            {
+                ContactInfo info;
+                info.HasCollision = true;
+                if (distSq > 1e-8f)
+                {
+                    const f32 dist = std::sqrt(distSq);
+                    info.Normal = Mul(D, 1.0f / dist);
+                    info.Penetration = minDist - dist;
+                }
+                else
+                {
+                    DirectX::XMFLOAT3 fallback = Cross(a.Axis, b.Axis);
+                    if (LengthSq(fallback) < 1e-6f)
+                    {
+                        const DirectX::XMFLOAT3 ref = (std::abs(a.Axis.y) < 0.9f) ? DirectX::XMFLOAT3{ 0.0f, 1.0f, 0.0f } : DirectX::XMFLOAT3{ 1.0f, 0.0f, 0.0f };
+                        fallback = Cross(a.Axis, ref);
+                    }
+                    info.Normal = Normalize(fallback);
+                    info.Penetration = minDist;
+                }
+                info.Point = Add(pA, Mul(info.Normal, a.Radius));
+                return info;
+            }
+
+            return {};
+        }
+
+        inline ContactInfo CheckBoxCapsule(const OBB& a, const Capsule& b) noexcept
+        {
+            auto lerpSeg = [&](f32 t) noexcept -> DirectX::XMFLOAT3
+            {
+                return Add(b.A, Mul(Sub(b.B, b.A), t));
+            };
+
+            auto distSqToOBB = [&](const DirectX::XMFLOAT3& p) noexcept -> f32
+            {
+                const DirectX::XMFLOAT3 D = Sub(p, a.Center);
+                const f32 d0 = Dot(D, a.Axes[0]);
+                const f32 d1 = Dot(D, a.Axes[1]);
+                const f32 d2 = Dot(D, a.Axes[2]);
+                const f32 ex0 = d0 - std::clamp(d0, -a.Extents.x, a.Extents.x);
+                const f32 ex1 = d1 - std::clamp(d1, -a.Extents.y, a.Extents.y);
+                const f32 ex2 = d2 - std::clamp(d2, -a.Extents.z, a.Extents.z);
+                return ex0 * ex0 + ex1 * ex1 + ex2 * ex2;
+            };
+
+            constexpr int kSamples = 16;
+            f32 bestT = 0.0f;
+            f32 bestDistSq = distSqToOBB(b.A);
+            for (int s = 1; s <= kSamples; ++s)
+            {
+                const f32 t = static_cast<f32>(s) / static_cast<f32>(kSamples);
+                const f32 dSq = distSqToOBB(lerpSeg(t));
+                if (dSq < bestDistSq)
+                {
+                    bestDistSq = dSq;
+                    bestT = t;
+                }
+            }
+
+            f32 lo = std::max(0.0f, bestT - 1.0f / static_cast<f32>(kSamples));
+            f32 hi = std::min(1.0f, bestT + 1.0f / static_cast<f32>(kSamples));
+            constexpr f32 kInvPhi = 0.61803398875f;
+            f32 x1 = hi - kInvPhi * (hi - lo);
+            f32 x2 = lo + kInvPhi * (hi - lo);
+            f32 f1 = distSqToOBB(lerpSeg(x1));
+            f32 f2 = distSqToOBB(lerpSeg(x2));
+
+            for (int iter = 0; iter < 12; ++iter)
+            {
+                if (f1 < f2)
+                {
+                    hi = x2;
+                    x2 = x1;
+                    f2 = f1;
+                    x1 = hi - kInvPhi * (hi - lo);
+                    f1 = distSqToOBB(lerpSeg(x1));
+                }
+                else
+                {
+                    lo = x1;
+                    x1 = x2;
+                    f1 = f2;
+                    x2 = lo + kInvPhi * (hi - lo);
+                    f2 = distSqToOBB(lerpSeg(x2));
+                }
+            }
+
+            const f32 refinedT = 0.5f * (lo + hi);
+            const DirectX::XMFLOAT3 refinedPt = lerpSeg(refinedT);
+            if (distSqToOBB(refinedPt) <= 1e-8f)
+            {
+                ContactInfo deepest{};
+                constexpr f32 interiorTs[5] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+                for (f32 t : interiorTs)
+                {
+                    const ContactInfo c = CheckBoxSphere(a, Sphere{ lerpSeg(t), b.Radius });
+                    if (c.HasCollision && (!deepest.HasCollision || c.Penetration > deepest.Penetration))
+                    {
+                        deepest = c;
+                    }
+                }
+                return deepest;
+            }
+
+            return CheckBoxSphere(a, Sphere{ refinedPt, b.Radius });
+        }
+
+        inline bool SweptBodyPair(
+            const PhysicsBodyEntry& b1,
+            const PhysicsBodyEntry& b2,
+            const DirectX::XMFLOAT3& relV,
+            f32& outTOI,
+            DirectX::XMFLOAT3& outNormal) noexcept
+        {
+            if (b1.ShapeType == ColliderShapeType::Sphere && b2.ShapeType == ColliderShapeType::Sphere)
+            {
+                return SweptSphereSphere(b1.SphereShape.Center, relV, b1.SphereShape.Radius, b2.SphereShape.Center, b2.SphereShape.Radius, outTOI, outNormal);
+            }
+            if (b1.ShapeType == ColliderShapeType::Box && b2.ShapeType == ColliderShapeType::Sphere)
+            {
+                return SweptBoxSphere(b1.BoxShape, relV, b2.SphereShape, outTOI, outNormal);
+            }
+            if (b1.ShapeType == ColliderShapeType::Sphere && b2.ShapeType == ColliderShapeType::Box)
+            {
+                const bool hit = SweptBoxSphere(b2.BoxShape, Mul(relV, -1.0f), b1.SphereShape, outTOI, outNormal);
+                if (hit) outNormal = Mul(outNormal, -1.0f);
+                return hit;
+            }
+            if (b1.ShapeType == ColliderShapeType::Box && b2.ShapeType == ColliderShapeType::Box)
+            {
+                return SweptBoxOBB(b1.BoxShape, relV, b2.BoxShape, outTOI, outNormal);
+            }
+
+            f32 bestTOI = 1.0f;
+            DirectX::XMFLOAT3 bestNormal{ 0.0f, 1.0f, 0.0f };
+            bool anyHit = false;
+
+            auto tryUpdate = [&](bool hit, f32 toi, const DirectX::XMFLOAT3& n) noexcept
+            {
+                if (hit && toi < bestTOI)
+                {
+                    bestTOI = toi;
+                    bestNormal = n;
+                    anyHit = true;
+                }
+            };
+
+            if (b1.ShapeType == ColliderShapeType::Capsule && b2.ShapeType == ColliderShapeType::Sphere)
+            {
+                const DirectX::XMFLOAT3 closest = ClosestPointOnSegment(b2.SphereShape.Center, b1.CapsuleShape.A, b1.CapsuleShape.B);
+                const DirectX::XMFLOAT3 pts[4] = { b1.CapsuleShape.A, b1.CapsuleShape.Center, b1.CapsuleShape.B, closest };
+                for (const auto& pt : pts)
+                {
+                    f32 toi = 1.0f;
+                    DirectX::XMFLOAT3 norm{};
+                    tryUpdate(SweptSphereSphere(pt, relV, b1.CapsuleShape.Radius, b2.SphereShape.Center, b2.SphereShape.Radius, toi, norm), toi, norm);
+                }
+            }
+            else if (b1.ShapeType == ColliderShapeType::Sphere && b2.ShapeType == ColliderShapeType::Capsule)
+            {
+                const DirectX::XMFLOAT3 closest = ClosestPointOnSegment(b1.SphereShape.Center, b2.CapsuleShape.A, b2.CapsuleShape.B);
+                const DirectX::XMFLOAT3 pts[4] = { b2.CapsuleShape.A, b2.CapsuleShape.Center, b2.CapsuleShape.B, closest };
+                for (const auto& pt : pts)
+                {
+                    f32 toi = 1.0f;
+                    DirectX::XMFLOAT3 norm{};
+                    tryUpdate(SweptSphereSphere(b1.SphereShape.Center, relV, b1.SphereShape.Radius, pt, b2.CapsuleShape.Radius, toi, norm), toi, norm);
+                }
+            }
+            else if (b1.ShapeType == ColliderShapeType::Capsule && b2.ShapeType == ColliderShapeType::Box)
+            {
+                const DirectX::XMFLOAT3 pts[3] = { b1.CapsuleShape.A, b1.CapsuleShape.Center, b1.CapsuleShape.B };
+                const DirectX::XMFLOAT3 negV = Mul(relV, -1.0f);
+                for (const auto& pt : pts)
+                {
+                    f32 toi = 1.0f;
+                    DirectX::XMFLOAT3 norm{};
+                    if (SweptBoxSphere(b2.BoxShape, negV, Sphere{ pt, b1.CapsuleShape.Radius }, toi, norm))
+                    {
+                        tryUpdate(true, toi, Mul(norm, -1.0f));
+                    }
+                }
+            }
+            else if (b1.ShapeType == ColliderShapeType::Box && b2.ShapeType == ColliderShapeType::Capsule)
+            {
+                const DirectX::XMFLOAT3 pts[3] = { b2.CapsuleShape.A, b2.CapsuleShape.Center, b2.CapsuleShape.B };
+                for (const auto& pt : pts)
+                {
+                    f32 toi = 1.0f;
+                    DirectX::XMFLOAT3 norm{};
+                    tryUpdate(SweptBoxSphere(b1.BoxShape, relV, Sphere{ pt, b2.CapsuleShape.Radius }, toi, norm), toi, norm);
+                }
+            }
+            else
+            {
+                DirectX::XMFLOAT3 p1{};
+                DirectX::XMFLOAT3 p2{};
+                ClosestPointsBetweenSegments(b1.CapsuleShape.A, b1.CapsuleShape.B, b2.CapsuleShape.A, b2.CapsuleShape.B, p1, p2);
+                const DirectX::XMFLOAT3 pts1[4] = { p1, b1.CapsuleShape.A, b1.CapsuleShape.Center, b1.CapsuleShape.B };
+                const DirectX::XMFLOAT3 pts2[4] = { p2, b2.CapsuleShape.A, b2.CapsuleShape.Center, b2.CapsuleShape.B };
+                for (int k = 0; k < 4; ++k)
+                {
+                    f32 toi = 1.0f;
+                    DirectX::XMFLOAT3 norm{};
+                    tryUpdate(SweptSphereSphere(pts1[k], relV, b1.CapsuleShape.Radius, pts2[k], b2.CapsuleShape.Radius, toi, norm), toi, norm);
+                }
+            }
+
+            if (anyHit)
+            {
+                outTOI = bestTOI;
+                outNormal = bestNormal;
+            }
+            return anyHit;
+        }
     }
 
     void PhysicsSystem::ClearSnapshot() noexcept
@@ -789,6 +1187,7 @@ namespace RL
         auto* rbPool = scene.GetPool<RigidBodyComponent>();
         auto* boxPool = scene.GetPool<BoxColliderComponent>();
         auto* spherePool = scene.GetPool<SphereColliderComponent>();
+        auto* capsulePool = scene.GetPool<CapsuleColliderComponent>();
 
         std::vector<PhysicsBodyEntry> bodies;
         for (const auto& ent : scene.GetAliveEntities())
@@ -800,8 +1199,9 @@ namespace RL
             auto* rb = rbPool ? rbPool->TryGet(idx) : nullptr;
             const auto* box = boxPool ? boxPool->TryGet(idx) : nullptr;
             const auto* sphere = spherePool ? spherePool->TryGet(idx) : nullptr;
+            const auto* capsule = capsulePool ? capsulePool->TryGet(idx) : nullptr;
 
-            if (!rb && !box && !sphere) continue;
+            if (!rb && !box && !sphere && !capsule) continue;
 
             PhysicsBodyEntry b;
             b.Ent = ent;
@@ -809,15 +1209,33 @@ namespace RL
             b.RigidBody = rb;
             b.BoxComp = box;
             b.SphereComp = sphere;
-            b.IsSphere = (sphere != nullptr && box == nullptr);
-            b.IsTrigger = (box && box->IsTrigger) || (sphere && sphere->IsTrigger);
+            b.CapsuleComp = capsule;
+            if (sphere && !box)
+            {
+                b.ShapeType = ColliderShapeType::Sphere;
+            }
+            else if (capsule && !box && !sphere)
+            {
+                b.ShapeType = ColliderShapeType::Capsule;
+            }
+            else
+            {
+                b.ShapeType = ColliderShapeType::Box;
+            }
+            b.IsTrigger = (box && box->IsTrigger) || (sphere && sphere->IsTrigger) || (capsule && capsule->IsTrigger);
             b.IsDynamic = (rb != nullptr && rb->Type == BodyType::Dynamic);
 
-            if (b.IsSphere)
+            if (b.ShapeType == ColliderShapeType::Sphere)
             {
                 b.SphereShape = BuildSphere(*tr, sphere);
                 b.BoundingRadius = b.SphereShape.Radius;
                 b.Center = b.SphereShape.Center;
+            }
+            else if (b.ShapeType == ColliderShapeType::Capsule)
+            {
+                b.CapsuleShape = BuildCapsule(*tr, capsule);
+                b.BoundingRadius = b.CapsuleShape.HalfCylinder + b.CapsuleShape.Radius;
+                b.Center = b.CapsuleShape.Center;
             }
             else
             {
@@ -889,9 +1307,13 @@ namespace RL
                     if (dispLenSq < 1e-8f) continue;
 
                     f32 bottomY = 0.0f;
-                    if (b1.IsSphere)
+                    if (b1.ShapeType == ColliderShapeType::Sphere)
                     {
                         bottomY = b1.SphereShape.Center.y - b1.SphereShape.Radius;
+                    }
+                    else if (b1.ShapeType == ColliderShapeType::Capsule)
+                    {
+                        bottomY = std::min(b1.CapsuleShape.A.y, b1.CapsuleShape.B.y) - b1.CapsuleShape.Radius;
                     }
                     else
                     {
@@ -929,25 +1351,7 @@ namespace RL
 
                         f32 toi = 1.0f;
                         DirectX::XMFLOAT3 norm{ 0.0f, 1.0f, 0.0f };
-                        bool hasHit = false;
-
-                        if (b1.IsSphere && b2.IsSphere)
-                        {
-                            hasHit = SweptSphereSphere(b1.SphereShape.Center, relV, b1.SphereShape.Radius, b2.SphereShape.Center, b2.SphereShape.Radius, toi, norm);
-                        }
-                        else if (!b1.IsSphere && b2.IsSphere)
-                        {
-                            hasHit = SweptBoxSphere(b1.BoxShape, relV, b2.SphereShape, toi, norm);
-                        }
-                        else if (b1.IsSphere && !b2.IsSphere)
-                        {
-                            hasHit = SweptBoxSphere(b2.BoxShape, Mul(relV, -1.0f), b1.SphereShape, toi, norm);
-                            if (hasHit) norm = Mul(norm, -1.0f);
-                        }
-                        else
-                        {
-                            hasHit = SweptBoxOBB(b1.BoxShape, relV, b2.BoxShape, toi, norm);
-                        }
+                        const bool hasHit = SweptBodyPair(b1, b2, relV, toi, norm);
 
                         if (hasHit)
                         {
@@ -986,10 +1390,15 @@ namespace RL
                 tr->Rotation.y += rb.AngularVelocity.y * subDt * toi;
                 tr->Rotation.z += rb.AngularVelocity.z * subDt * toi;
 
-                if (b1.IsSphere)
+                if (b1.ShapeType == ColliderShapeType::Sphere)
                 {
                     b1.SphereShape = BuildSphere(*tr, b1.SphereComp);
                     b1.Center = b1.SphereShape.Center;
+                }
+                else if (b1.ShapeType == ColliderShapeType::Capsule)
+                {
+                    b1.CapsuleShape = BuildCapsule(*tr, b1.CapsuleComp);
+                    b1.Center = b1.CapsuleShape.Center;
                 }
                 else
                 {
@@ -1067,7 +1476,7 @@ namespace RL
 
                 if (!b1.IsTrigger)
                 {
-                    if (b1.IsSphere)
+                    if (b1.ShapeType == ColliderShapeType::Sphere)
                     {
                         const float bottomY = b1.SphereShape.Center.y - b1.SphereShape.Radius;
                         if (bottomY < 0.0f)
@@ -1086,6 +1495,86 @@ namespace RL
                             }
                             rb.LinearVelocity.x *= std::max(0.0f, 1.0f - rb.Friction * subDt * 10.0f);
                             rb.LinearVelocity.z *= std::max(0.0f, 1.0f - rb.Friction * subDt * 10.0f);
+                        }
+                        else if (!hitGroundFlags[i])
+                        {
+                            rb.IsGrounded = false;
+                        }
+                    }
+                    else if (b1.ShapeType == ColliderShapeType::Capsule)
+                    {
+                        const DirectX::XMFLOAT3 endPoints[2] = {
+                            { b1.CapsuleShape.A.x, b1.CapsuleShape.A.y - b1.CapsuleShape.Radius, b1.CapsuleShape.A.z },
+                            { b1.CapsuleShape.B.x, b1.CapsuleShape.B.y - b1.CapsuleShape.Radius, b1.CapsuleShape.B.z }
+                        };
+                        float maxPen = 0.0f;
+                        u32 penCount = 0;
+                        for (u32 c = 0; c < 2; ++c)
+                        {
+                            if (endPoints[c].y < 0.0f)
+                            {
+                                maxPen = std::max(maxPen, -endPoints[c].y);
+                                penCount++;
+                            }
+                        }
+
+                        if (penCount > 0)
+                        {
+                            tr->Position.y += maxPen;
+                            b1.CapsuleShape.A.y += maxPen;
+                            b1.CapsuleShape.B.y += maxPen;
+                            b1.CapsuleShape.Center.y += maxPen;
+                            b1.Center.y += maxPen;
+
+                            const float mass = std::max(0.001f, rb.Mass);
+                            const float invMass = 1.0f / mass;
+                            const DirectX::XMFLOAT3 N{ 0.0f, 1.0f, 0.0f };
+
+                            for (u32 c = 0; c < 2; ++c)
+                            {
+                                if (endPoints[c].y < 0.0f)
+                                {
+                                    const DirectX::XMFLOAT3 r{
+                                        endPoints[c].x - tr->Position.x,
+                                        endPoints[c].y + maxPen - tr->Position.y,
+                                        endPoints[c].z - tr->Position.z
+                                    };
+                                    const DirectX::XMFLOAT3 angVelTerm = Cross(rb.AngularVelocity, r);
+                                    const float vpy = rb.LinearVelocity.y + angVelTerm.y;
+
+                                    if (vpy < 0.0f)
+                                    {
+                                        const DirectX::XMFLOAT3 tN = Cross(r, N);
+                                        const DirectX::XMFLOAT3 invItN = GetInverseInertiaTensor(tN, *tr, b1.BoxComp, b1.SphereComp, b1.CapsuleComp, mass);
+                                        const float rotInertia = Dot(tN, invItN);
+                                        const float invMeff = invMass + rotInertia;
+
+                                        if (invMeff > 1e-6f)
+                                        {
+                                            const float impulseMag = -(1.0f + rb.Restitution) * vpy / (static_cast<float>(penCount) * invMeff);
+                                            rb.LinearVelocity.y += impulseMag * invMass;
+                                            rb.AngularVelocity.x += impulseMag * invItN.x;
+                                            rb.AngularVelocity.y += impulseMag * invItN.y;
+                                            rb.AngularVelocity.z += impulseMag * invItN.z;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (std::abs(rb.LinearVelocity.y) < 0.2f)
+                            {
+                                rb.LinearVelocity.y = 0.0f;
+                                rb.AngularVelocity.x *= 0.8f;
+                                rb.AngularVelocity.y *= 0.8f;
+                                rb.AngularVelocity.z *= 0.8f;
+                                rb.IsGrounded = true;
+                            }
+
+                            rb.LinearVelocity.x *= std::max(0.0f, 1.0f - rb.Friction * subDt * 10.0f);
+                            rb.LinearVelocity.z *= std::max(0.0f, 1.0f - rb.Friction * subDt * 10.0f);
+                            rb.AngularVelocity.x *= std::max(0.0f, 1.0f - rb.Friction * subDt * 10.0f);
+                            rb.AngularVelocity.y *= std::max(0.0f, 1.0f - rb.Friction * subDt * 10.0f);
+                            rb.AngularVelocity.z *= std::max(0.0f, 1.0f - rb.Friction * subDt * 10.0f);
                         }
                         else if (!hitGroundFlags[i])
                         {
@@ -1236,15 +1725,15 @@ namespace RL
                                 if (distSq > minDist * minDist) continue;
 
                                 ContactInfo contact;
-                                if (!b1.IsSphere && !b2.IsSphere)
+                                if (b1.ShapeType == ColliderShapeType::Box && b2.ShapeType == ColliderShapeType::Box)
                                 {
                                     contact = CheckOBBOBB(b1.BoxShape, b2.BoxShape);
                                 }
-                                else if (!b1.IsSphere && b2.IsSphere)
+                                else if (b1.ShapeType == ColliderShapeType::Box && b2.ShapeType == ColliderShapeType::Sphere)
                                 {
                                     contact = CheckBoxSphere(b1.BoxShape, b2.SphereShape);
                                 }
-                                else if (b1.IsSphere && !b2.IsSphere)
+                                else if (b1.ShapeType == ColliderShapeType::Sphere && b2.ShapeType == ColliderShapeType::Box)
                                 {
                                     contact = CheckBoxSphere(b2.BoxShape, b1.SphereShape);
                                     if (contact.HasCollision)
@@ -1252,9 +1741,37 @@ namespace RL
                                         contact.Normal = Mul(contact.Normal, -1.0f);
                                     }
                                 }
-                                else
+                                else if (b1.ShapeType == ColliderShapeType::Sphere && b2.ShapeType == ColliderShapeType::Sphere)
                                 {
                                     contact = CheckSphereSphere(b1.SphereShape, b2.SphereShape);
+                                }
+                                else if (b1.ShapeType == ColliderShapeType::Capsule && b2.ShapeType == ColliderShapeType::Capsule)
+                                {
+                                    contact = CheckCapsuleCapsule(b1.CapsuleShape, b2.CapsuleShape);
+                                }
+                                else if (b1.ShapeType == ColliderShapeType::Capsule && b2.ShapeType == ColliderShapeType::Sphere)
+                                {
+                                    contact = CheckCapsuleSphere(b1.CapsuleShape, b2.SphereShape);
+                                }
+                                else if (b1.ShapeType == ColliderShapeType::Sphere && b2.ShapeType == ColliderShapeType::Capsule)
+                                {
+                                    contact = CheckCapsuleSphere(b2.CapsuleShape, b1.SphereShape);
+                                    if (contact.HasCollision)
+                                    {
+                                        contact.Normal = Mul(contact.Normal, -1.0f);
+                                    }
+                                }
+                                else if (b1.ShapeType == ColliderShapeType::Box && b2.ShapeType == ColliderShapeType::Capsule)
+                                {
+                                    contact = CheckBoxCapsule(b1.BoxShape, b2.CapsuleShape);
+                                }
+                                else if (b1.ShapeType == ColliderShapeType::Capsule && b2.ShapeType == ColliderShapeType::Box)
+                                {
+                                    contact = CheckBoxCapsule(b2.BoxShape, b1.CapsuleShape);
+                                    if (contact.HasCollision)
+                                    {
+                                        contact.Normal = Mul(contact.Normal, -1.0f);
+                                    }
                                 }
 
                                 if (!contact.HasCollision) continue;
@@ -1313,16 +1830,7 @@ namespace RL
                                     if (b1.IsDynamic && rb1)
                                     {
                                         const DirectX::XMFLOAT3 tN1 = Cross(rA, contact.Normal);
-                                        if (!b1.IsSphere)
-                                        {
-                                            invItN1 = TransformInverseInertia(tN1, b1.BoxShape.Axes, b1.BoxShape.Extents, rb1->Mass);
-                                        }
-                                        else
-                                        {
-                                            const float Isph = 0.4f * rb1->Mass * b1.SphereShape.Radius * b1.SphereShape.Radius;
-                                            const float invI = 1.0f / std::max(1e-4f, Isph);
-                                            invItN1 = Mul(tN1, invI);
-                                        }
+                                        invItN1 = GetInverseInertiaTensor(tN1, *tr1, b1.BoxComp, b1.SphereComp, b1.CapsuleComp, rb1->Mass);
                                         rotFactor1 = Dot(tN1, invItN1);
                                     }
 
@@ -1331,16 +1839,7 @@ namespace RL
                                     if (b2.IsDynamic && rb2)
                                     {
                                         const DirectX::XMFLOAT3 tN2 = Cross(rB, contact.Normal);
-                                        if (!b2.IsSphere)
-                                        {
-                                            invItN2 = TransformInverseInertia(tN2, b2.BoxShape.Axes, b2.BoxShape.Extents, rb2->Mass);
-                                        }
-                                        else
-                                        {
-                                            const float Isph = 0.4f * rb2->Mass * b2.SphereShape.Radius * b2.SphereShape.Radius;
-                                            const float invI = 1.0f / std::max(1e-4f, Isph);
-                                            invItN2 = Mul(tN2, invI);
-                                        }
+                                        invItN2 = GetInverseInertiaTensor(tN2, *tr2, b2.BoxComp, b2.SphereComp, b2.CapsuleComp, rb2->Mass);
                                         rotFactor2 = Dot(tN2, invItN2);
                                     }
 
@@ -1443,6 +1942,7 @@ namespace RL
         auto* rbPool = scene.GetPool<RigidBodyComponent>();
         auto* boxPool = scene.GetPool<BoxColliderComponent>();
         auto* spherePool = scene.GetPool<SphereColliderComponent>();
+        auto* capsulePool = scene.GetPool<CapsuleColliderComponent>();
 
         auto* distJointPool = scene.GetPool<DistanceJointComponent>();
         auto* hingeJointPool = scene.GetPool<HingeJointComponent>();
@@ -1527,13 +2027,15 @@ namespace RL
                     const DirectX::XMFLOAT3 tA = Cross(rA, n);
                     const auto* boxA = boxPool ? boxPool->TryGet(entA.GetIndex()) : nullptr;
                     const auto* sphereA = spherePool ? spherePool->TryGet(entA.GetIndex()) : nullptr;
-                    const DirectX::XMFLOAT3 invItA = isDynA ? GetInverseInertiaTensor(tA, *trA, boxA, sphereA, rbA->Mass) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const auto* capsuleA = capsulePool ? capsulePool->TryGet(entA.GetIndex()) : nullptr;
+                    const DirectX::XMFLOAT3 invItA = isDynA ? GetInverseInertiaTensor(tA, *trA, boxA, sphereA, capsuleA, rbA->Mass) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
                     const f32 rotA = isDynA ? Dot(tA, invItA) : 0.0f;
 
                     const auto* boxB = (hasTarget && boxPool) ? boxPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
                     const auto* sphereB = (hasTarget && spherePool) ? spherePool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+                    const auto* capsuleB = (hasTarget && capsulePool) ? capsulePool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
                     const DirectX::XMFLOAT3 tB = Cross(rB, n);
-                    const DirectX::XMFLOAT3 invItB = isDynB ? GetInverseInertiaTensor(tB, *trB, boxB, sphereB, rbB->Mass) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
+                    const DirectX::XMFLOAT3 invItB = isDynB ? GetInverseInertiaTensor(tB, *trB, boxB, sphereB, capsuleB, rbB->Mass) : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
                     const f32 rotB = isDynB ? Dot(tB, invItB) : 0.0f;
 
                     const f32 effMassInv = invMassSum + rotA + rotB;
@@ -1636,18 +2138,20 @@ namespace RL
 
                     const auto* boxA = boxPool ? boxPool->TryGet(entA.GetIndex()) : nullptr;
                     const auto* sphereA = spherePool ? spherePool->TryGet(entA.GetIndex()) : nullptr;
+                    const auto* capsuleA = capsulePool ? capsulePool->TryGet(entA.GetIndex()) : nullptr;
                     const auto* boxB = (hasTarget && boxPool) ? boxPool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
                     const auto* sphereB = (hasTarget && spherePool) ? spherePool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
+                    const auto* capsuleB = (hasTarget && capsulePool) ? capsulePool->TryGet(joint.TargetEntity.GetIndex()) : nullptr;
 
                     if (isDynA)
                     {
                         rbA->LinearVelocity = Add(rbA->LinearVelocity, Mul(linImpulse, invMassA));
-                        rbA->AngularVelocity = Add(rbA->AngularVelocity, GetInverseInertiaTensor(Cross(rA, linImpulse), *trA, boxA, sphereA, rbA->Mass));
+                        rbA->AngularVelocity = Add(rbA->AngularVelocity, GetInverseInertiaTensor(Cross(rA, linImpulse), *trA, boxA, sphereA, capsuleA, rbA->Mass));
                     }
                     if (isDynB)
                     {
                         rbB->LinearVelocity = Sub(rbB->LinearVelocity, Mul(linImpulse, invMassB));
-                        rbB->AngularVelocity = Sub(rbB->AngularVelocity, GetInverseInertiaTensor(Cross(rB, Mul(linImpulse, -1.0f)), *trB, boxB, sphereB, rbB->Mass));
+                        rbB->AngularVelocity = Sub(rbB->AngularVelocity, GetInverseInertiaTensor(Cross(rB, Mul(linImpulse, -1.0f)), *trB, boxB, sphereB, capsuleB, rbB->Mass));
                     }
 
                     const DirectX::XMFLOAT3 axisWorld = GetWorldDirection(*trA, joint.Axis);
@@ -1876,6 +2380,7 @@ namespace RL
 
         const auto* boxPool = scene.GetPool<BoxColliderComponent>();
         const auto* spherePool = scene.GetPool<SphereColliderComponent>();
+        const auto* capsulePool = scene.GetPool<CapsuleColliderComponent>();
 
         float dirLen = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
         if (dirLen < 1e-6f) return std::nullopt;
@@ -1883,6 +2388,7 @@ namespace RL
         const float dx = direction.x / dirLen;
         const float dy = direction.y / dirLen;
         const float dz = direction.z / dirLen;
+        const DirectX::XMFLOAT3 rayDir{ dx, dy, dz };
 
         float closestDist = maxDistance;
         std::optional<RaycastHit> hit;
@@ -1894,6 +2400,7 @@ namespace RL
 
             const auto* box = boxPool ? boxPool->TryGet(ent.GetIndex()) : nullptr;
             const auto* sphere = spherePool ? spherePool->TryGet(ent.GetIndex()) : nullptr;
+            const auto* capsule = capsulePool ? capsulePool->TryGet(ent.GetIndex()) : nullptr;
 
             if (sphere && !box)
             {
@@ -1937,6 +2444,98 @@ namespace RL
                         h.Normal = { -dx, -dy, -dz };
                     }
                     h.Distance = t;
+                    hit = h;
+                }
+            }
+            else if (capsule && !box && !sphere)
+            {
+                const Capsule cap = BuildCapsule(*tr, capsule);
+                const DirectX::XMFLOAT3 closestOnSeg = ClosestPointOnSegment(origin, cap.A, cap.B);
+                const DirectX::XMFLOAT3 diff0 = Sub(origin, closestOnSeg);
+                if (LengthSq(diff0) <= cap.Radius * cap.Radius)
+                {
+                    if (0.0f < closestDist)
+                    {
+                        closestDist = 0.0f;
+                        RaycastHit h;
+                        h.HitEntity = ent;
+                        h.Point = origin;
+                        h.Normal = (LengthSq(diff0) > 1e-8f) ? Normalize(diff0) : DirectX::XMFLOAT3{ -dx, -dy, -dz };
+                        h.Distance = 0.0f;
+                        hit = h;
+                    }
+                    continue;
+                }
+
+                float bestT = closestDist;
+                DirectX::XMFLOAT3 bestNormal{ 0.0f, 1.0f, 0.0f };
+                bool hitCap = false;
+
+                const DirectX::XMFLOAT3 ab = Sub(cap.B, cap.A);
+                const float hLen = Length(ab);
+                if (hLen > 1e-6f)
+                {
+                    const DirectX::XMFLOAT3 u = Mul(ab, 1.0f / hLen);
+                    const DirectX::XMFLOAT3 ao = Sub(origin, cap.A);
+                    const DirectX::XMFLOAT3 dPerp = Sub(rayDir, Mul(u, Dot(rayDir, u)));
+                    const DirectX::XMFLOAT3 aoPerp = Sub(ao, Mul(u, Dot(ao, u)));
+
+                    const float a = Dot(dPerp, dPerp);
+                    const float b = Dot(aoPerp, dPerp);
+                    const float c = Dot(aoPerp, aoPerp) - cap.Radius * cap.Radius;
+                    if (a > 1e-8f)
+                    {
+                        const float disc = b * b - a * c;
+                        if (disc >= 0.0f)
+                        {
+                            const float tCyl = (-b - std::sqrt(disc)) / a;
+                            if (tCyl >= 0.0f && tCyl < bestT)
+                            {
+                                const DirectX::XMFLOAT3 pt = Add(origin, Mul(rayDir, tCyl));
+                                const float s = Dot(Sub(pt, cap.A), u);
+                                if (s >= 0.0f && s <= hLen)
+                                {
+                                    bestT = tCyl;
+                                    const DirectX::XMFLOAT3 axisPt = Add(cap.A, Mul(u, s));
+                                    bestNormal = Normalize(Sub(pt, axisPt));
+                                    hitCap = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                const DirectX::XMFLOAT3 caps[2] = { cap.A, cap.B };
+                for (int k = 0; k < 2; ++k)
+                {
+                    const DirectX::XMFLOAT3 oc = Sub(origin, caps[k]);
+                    const float bS = Dot(oc, rayDir);
+                    const float cS = Dot(oc, oc) - cap.Radius * cap.Radius;
+                    if (cS > 0.0f && bS > 0.0f) continue;
+
+                    const float discS = bS * bS - cS;
+                    if (discS < 0.0f) continue;
+
+                    float tS = -bS - std::sqrt(discS);
+                    if (tS < 0.0f) tS = 0.0f;
+                    if (tS < bestT)
+                    {
+                        bestT = tS;
+                        const DirectX::XMFLOAT3 pt = Add(origin, Mul(rayDir, tS));
+                        const DirectX::XMFLOAT3 n = Sub(pt, caps[k]);
+                        bestNormal = (LengthSq(n) > 1e-8f) ? Normalize(n) : DirectX::XMFLOAT3{ -dx, -dy, -dz };
+                        hitCap = true;
+                    }
+                }
+
+                if (hitCap)
+                {
+                    closestDist = bestT;
+                    RaycastHit h;
+                    h.HitEntity = ent;
+                    h.Point = Add(origin, Mul(rayDir, bestT));
+                    h.Normal = bestNormal;
+                    h.Distance = bestT;
                     hit = h;
                 }
             }
@@ -2074,5 +2673,140 @@ namespace RL
         }
 
         return hit;
+    }
+
+    std::vector<Entity> PhysicsSystem::SpawnRagdollChain(
+        Scene& scene,
+        const DirectX::XMFLOAT3& origin)
+    {
+        std::vector<Entity> created;
+        created.reserve(4);
+
+        Entity root = scene.CreateEntity("Ragdoll_Root");
+        if (auto* tr = scene.TryGetComponent<TransformComponent>(root))
+        {
+            tr->Position = origin;
+            tr->Scale = { 0.5f, 0.6f, 0.5f };
+        }
+        else
+        {
+            scene.AddComponent<TransformComponent>(root, origin, DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f }, DirectX::XMFLOAT3{ 0.5f, 0.6f, 0.5f });
+        }
+        auto& rootMesh = scene.AddComponent<MeshComponent>(root);
+        rootMesh.MeshName = "Sphere";
+        rootMesh.Color = { 0.95f, 0.85f, 0.45f, 1.0f };
+        auto& rootRb = scene.AddComponent<RigidBodyComponent>(root);
+        rootRb.Type = BodyType::Dynamic;
+        rootRb.Mass = 2.0f;
+        rootRb.Restitution = 0.25f;
+        rootRb.Friction = 0.5f;
+        rootRb.LinearDamping = 0.08f;
+        rootRb.AngularDamping = 0.12f;
+        auto& rootCap = scene.AddComponent<CapsuleColliderComponent>(root);
+        rootCap.Radius = 0.45f;
+        rootCap.Height = 1.0f;
+        created.push_back(root);
+
+        Entity torso = scene.CreateEntity("Ragdoll_Torso");
+        const DirectX::XMFLOAT3 torsoPos{ origin.x, origin.y - 1.05f, origin.z };
+        if (auto* tr = scene.TryGetComponent<TransformComponent>(torso))
+        {
+            tr->Position = torsoPos;
+            tr->Scale = { 0.7f, 1.3f, 0.45f };
+        }
+        else
+        {
+            scene.AddComponent<TransformComponent>(torso, torsoPos, DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f }, DirectX::XMFLOAT3{ 0.7f, 1.3f, 0.45f });
+        }
+        auto& torsoMesh = scene.AddComponent<MeshComponent>(torso);
+        torsoMesh.MeshName = "Cube";
+        torsoMesh.Color = { 0.25f, 0.65f, 0.95f, 1.0f };
+        auto& torsoRb = scene.AddComponent<RigidBodyComponent>(torso);
+        torsoRb.Type = BodyType::Dynamic;
+        torsoRb.Mass = 3.0f;
+        torsoRb.Restitution = 0.25f;
+        torsoRb.Friction = 0.5f;
+        torsoRb.LinearDamping = 0.08f;
+        torsoRb.AngularDamping = 0.12f;
+        auto& torsoCap = scene.AddComponent<CapsuleColliderComponent>(torso);
+        torsoCap.Radius = 0.4f;
+        torsoCap.Height = 1.0f;
+        auto& torsoJoint = scene.AddComponent<DistanceJointComponent>(torso);
+        torsoJoint.TargetEntity = root;
+        torsoJoint.AnchorA = { 0.0f, 0.5f, 0.0f };
+        torsoJoint.AnchorB = { 0.0f, -0.5f, 0.0f };
+        torsoJoint.TargetDistance = 0.1f;
+        torsoJoint.Stiffness = 0.9f;
+        torsoJoint.Damping = 0.2f;
+        torsoJoint.AutoDistance = true;
+        created.push_back(torso);
+
+        Entity armL = scene.CreateEntity("Ragdoll_ArmL");
+        const DirectX::XMFLOAT3 armLPos{ origin.x - 0.62f, origin.y - 1.05f, origin.z };
+        if (auto* tr = scene.TryGetComponent<TransformComponent>(armL))
+        {
+            tr->Position = armLPos;
+            tr->Scale = { 0.35f, 1.0f, 0.35f };
+        }
+        else
+        {
+            scene.AddComponent<TransformComponent>(armL, armLPos, DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f }, DirectX::XMFLOAT3{ 0.35f, 1.0f, 0.35f });
+        }
+        auto& armLMesh = scene.AddComponent<MeshComponent>(armL);
+        armLMesh.MeshName = "Cube";
+        armLMesh.Color = { 0.95f, 0.45f, 0.35f, 1.0f };
+        auto& armLRb = scene.AddComponent<RigidBodyComponent>(armL);
+        armLRb.Type = BodyType::Dynamic;
+        armLRb.Mass = 1.0f;
+        armLRb.Restitution = 0.25f;
+        armLRb.Friction = 0.5f;
+        armLRb.LinearDamping = 0.08f;
+        armLRb.AngularDamping = 0.12f;
+        auto& armLCap = scene.AddComponent<CapsuleColliderComponent>(armL);
+        armLCap.Radius = 0.4f;
+        armLCap.Height = 1.0f;
+        auto& armLHinge = scene.AddComponent<HingeJointComponent>(armL);
+        armLHinge.TargetEntity = torso;
+        armLHinge.Anchor = { 0.0f, 0.45f, 0.0f };
+        armLHinge.Axis = { 0.0f, 0.0f, 1.0f };
+        armLHinge.LowerAngleLimit = -1.57f;
+        armLHinge.UpperAngleLimit = 1.57f;
+        armLHinge.EnableLimits = true;
+        created.push_back(armL);
+
+        Entity armR = scene.CreateEntity("Ragdoll_ArmR");
+        const DirectX::XMFLOAT3 armRPos{ origin.x + 0.62f, origin.y - 1.05f, origin.z };
+        if (auto* tr = scene.TryGetComponent<TransformComponent>(armR))
+        {
+            tr->Position = armRPos;
+            tr->Scale = { 0.35f, 1.0f, 0.35f };
+        }
+        else
+        {
+            scene.AddComponent<TransformComponent>(armR, armRPos, DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f }, DirectX::XMFLOAT3{ 0.35f, 1.0f, 0.35f });
+        }
+        auto& armRMesh = scene.AddComponent<MeshComponent>(armR);
+        armRMesh.MeshName = "Cube";
+        armRMesh.Color = { 0.95f, 0.45f, 0.35f, 1.0f };
+        auto& armRRb = scene.AddComponent<RigidBodyComponent>(armR);
+        armRRb.Type = BodyType::Dynamic;
+        armRRb.Mass = 1.0f;
+        armRRb.Restitution = 0.25f;
+        armRRb.Friction = 0.5f;
+        armRRb.LinearDamping = 0.08f;
+        armRRb.AngularDamping = 0.12f;
+        auto& armRCap = scene.AddComponent<CapsuleColliderComponent>(armR);
+        armRCap.Radius = 0.4f;
+        armRCap.Height = 1.0f;
+        auto& armRHinge = scene.AddComponent<HingeJointComponent>(armR);
+        armRHinge.TargetEntity = torso;
+        armRHinge.Anchor = { 0.0f, 0.45f, 0.0f };
+        armRHinge.Axis = { 0.0f, 0.0f, 1.0f };
+        armRHinge.LowerAngleLimit = -1.57f;
+        armRHinge.UpperAngleLimit = 1.57f;
+        armRHinge.EnableLimits = true;
+        created.push_back(armR);
+
+        return created;
     }
 }

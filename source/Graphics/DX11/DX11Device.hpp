@@ -15,6 +15,9 @@
 #include <expected>
 #include <memory>
 #include <unordered_map>
+#include <vector>
+#include <chrono>
+#include <random>
 
 namespace RL
 {
@@ -32,12 +35,39 @@ namespace RL
         float t[4];
     };
 
+    struct DX11CpuVertex
+    {
+        float p[3];
+        float n[3];
+        float uv[2];
+        float c[4];
+        float t[4];
+        u32 boneIndices[4];
+        float boneWeights[4];
+    };
+
     struct DX11MeshBuffers
     {
         ComPtr<ID3D11Buffer> vb;
         ComPtr<ID3D11Buffer> ib;
         u32 indexCount = 0;
         bool isLineList = false;
+        std::vector<DX11CpuVertex> cpuVertices;
+    };
+
+    struct DX11Particle
+    {
+        DirectX::XMFLOAT3 Position{ 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 Velocity{ 0.0f, 0.0f, 0.0f };
+        f32 Life = 0.0f;
+        f32 MaxLife = 1.0f;
+    };
+
+    struct DX11EmitterState
+    {
+        std::vector<DX11Particle> Particles;
+        f32 EmitAccumulator = 0.0f;
+        bool HasEmittedBurst = false;
     };
 
     class DX11CommandBuffer final : public RHI::IRHICommandBuffer
@@ -96,6 +126,9 @@ namespace RL
 
         [[nodiscard]] bool HasCachedMesh(std::string_view key) const;
         [[nodiscard]] u32 GetCachedMeshIndexCount(std::string_view key) const;
+        [[nodiscard]] bool HasSkinnedBufferCreated() const noexcept { return m_skinnedVertexBuffer != nullptr; }
+        [[nodiscard]] u32 GetLastRenderedSkinnedCount() const noexcept { return m_lastRenderedSkinnedCount; }
+        [[nodiscard]] u32 GetLastRenderedParticleCount() const noexcept { return m_lastRenderedParticleCount; }
 
         [[nodiscard]] const RHI::GpuDeviceInfo& GetGpuInfo() const noexcept override { return m_gpuInfo; }
         [[nodiscard]] void* GetNativeDevice() const noexcept override { return m_device.Get(); }
@@ -133,6 +166,13 @@ namespace RL
             std::span<const u32> indices,
             bool isLineList = false);
         const DX11MeshBuffers* GetOrCreateMesh(const MeshComponent& mc);
+        const DX11MeshBuffers* GetOrCreateMeshByPath(std::string_view modelPath);
+        ID3D11Buffer* UpdateSkinnedVertexBuffer(
+            std::span<const MeshVertex> cpuVerts,
+            std::span<const DirectX::XMFLOAT4X4> bonePalette);
+        ID3D11Buffer* UpdateSkinnedVertexBuffer(
+            std::span<const DX11CpuVertex> cpuVerts,
+            std::span<const DirectX::XMFLOAT4X4> bonePalette);
         ID3D11ShaderResourceView* GetOrCreateTexture(const std::string& path);
 
     private:
@@ -143,6 +183,7 @@ namespace RL
         ComPtr<ID3D11Texture2D>         m_depthBuffer;
         ComPtr<ID3D11DepthStencilView>  m_dsv;
         ComPtr<ID3D11DepthStencilState> m_depthState;
+        ComPtr<ID3D11DepthStencilState> m_depthReadOnlyState;
         ComPtr<ID3D11RasterizerState>   m_rasterState;
         ComPtr<ID3D11RasterizerState>   m_wireframeRasterState;
         ComPtr<ID3D11BlendState>        m_alphaBlendState;
@@ -153,7 +194,15 @@ namespace RL
         ComPtr<ID3D11Buffer>           m_constantBuffer;
         ComPtr<ID3D11Buffer>           m_cubeVertexBuffer;
         ComPtr<ID3D11Buffer>           m_cubeIndexBuffer;
+        ComPtr<ID3D11Buffer>           m_skinnedVertexBuffer;
+        u32                            m_skinnedVertexCapacity = 0;
+        u32                            m_lastRenderedSkinnedCount = 0;
+        u32                            m_lastRenderedParticleCount = 0;
         std::unordered_map<std::string, DX11MeshBuffers> m_meshCache;
+        std::unordered_map<u64, DX11EmitterState> m_emitterStates;
+        std::chrono::steady_clock::time_point m_lastRenderTime{};
+        bool                           m_hasLastRenderTime = false;
+        std::mt19937                   m_particleRng{ 42u };
 
         ComPtr<ID3D11VertexShader>       m_shadowVS;
         ComPtr<ID3D11Texture2D>          m_shadowTexture;

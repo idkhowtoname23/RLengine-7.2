@@ -160,6 +160,14 @@ namespace RL
         bool IsTrigger = false;
     };
 
+    struct CapsuleColliderComponent
+    {
+        f32 Radius = 0.4f;
+        f32 Height = 1.8f;
+        DirectX::XMFLOAT3 Offset{ 0.0f, 0.0f, 0.0f };
+        bool IsTrigger = false;
+    };
+
     struct DistanceJointComponent
     {
         Entity TargetEntity{};

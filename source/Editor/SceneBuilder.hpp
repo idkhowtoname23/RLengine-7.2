@@ -29,6 +29,7 @@ namespace RL
     class RenderSystem;
     class TextureManager;
     class ScriptEngine;
+    class EditorLayer;
 
     enum class BlenderWorkspace : u8
     {
@@ -135,6 +136,12 @@ namespace RL
 
         [[nodiscard]] bool IsVSyncEnabled() const noexcept { return m_vsync; }
         void SetVSyncEnabled(bool enabled) noexcept { m_vsync = enabled; }
+
+        void SetEditorLayer(EditorLayer* editorLayer) noexcept { m_editorLayer = editorLayer; }
+        void SetHierarchyVisible(bool visible) noexcept { m_showHierarchy = visible; }
+        void SetInspectorVisible(bool visible) noexcept { m_showInspector = visible; }
+        void SetTimelineVisible(bool visible) noexcept { m_showTimeline = visible; }
+        void SetToolShelfVisible(bool visible) noexcept { m_showToolShelf = visible; }
 
         bool SaveScene(const Scene& scene, const std::filesystem::path& path);
         bool LoadScene(Scene& scene, ID3D12Device* device, const std::filesystem::path& path);
@@ -254,6 +261,7 @@ namespace RL
         TransformComponent m_gizmoStartTransform{};
         TransformComponent m_gizmoRawTransform{};
         Entity m_gizmoTargetEntity{};
+        EditorLayer* m_editorLayer = nullptr;
 
         void HandleViewportCameraNavigation(Scene& scene, const Timer& timer, bool viewportHovered);
         bool DrawTargetEntityCombo(Scene& scene, const char* label, Entity owner, Entity& target);

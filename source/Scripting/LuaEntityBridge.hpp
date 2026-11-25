@@ -68,8 +68,11 @@ namespace RL
         static int Entity_IsValid(lua_State* L);
         static int Entity_GetID(lua_State* L);
         static int Entity_GetIndex(lua_State* L);
+        static int Entity_ApplyImpulse(lua_State* L);
         static int Entity_ToString(lua_State* L);
         static int Entity_Equal(lua_State* L);
+
+        static int Physics_Raycast(lua_State* L);
 
         static int Scene_CreateEntity(lua_State* L);
         static int Scene_DestroyEntity(lua_State* L);

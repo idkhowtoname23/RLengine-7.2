@@ -1,30 +1,36 @@
-# 🚀 RLengine 7.2 Alpha 4 — Pre-Release Notes
+# 🚀 RLengine 7.2 Alpha 4 & Alpha 5 — Pre-Release Notes
 
-RLengine 7.2 Alpha 4 marks the fourth major milestone in the 7.2 development cycle. It introduces HDR offscreen post-processing, animation cross-fade blending, isolated per-entity Lua scripting, background thread-pool asset streaming, and Binary v3 scene serialization.
+**RLengine 7.2 Alpha 5** completes both Phase A (Alpha 4) and Phase B (Alpha 5) toward the December 2026 final release, delivering HDR post-processing, animation cross-fade blending, per-entity Lua scripting, async asset streaming, capsule physics & ragdoll chains, DirectX 11 skinning/particle parity, editor workspace presets, and standalone game runtime (`--play`).
 
 ---
 
-## 🌟 Major New Capabilities in Alpha 4
+## 🌟 Highlights of Alpha 5
 
-### 1. ✨ DX12 HDR Offscreen Post-Processing (`shaders/postprocess.hlsl`)
-* **R16G16B16A16_FLOAT HDR Render Target**: `RenderSystem` renders the 3D scene, grid, and quads into a dedicated offscreen HDR buffer (automatically resized with the viewport) and resolves to the backbuffer via a fullscreen triangle pass.
-* **Bloom, Exposure & Vignette**: Configurable via `WorldEnvironment` (`PostProcessEnabled`, `Exposure`, `BloomThreshold`, `BloomIntensity`, `VignetteIntensity`) with 9-tap soft bloom, ACES filmic tonemapping, sRGB gamma, and live `F5` shader hot-reload support.
+### 1. 🦴 Capsule Colliders, Articulated Ragdoll Chains & Lua Physics API
+* **`CapsuleColliderComponent` Solver**: `PhysicsSystem` now resolves Capsule-vs-Plane ($Y=0$), Capsule-vs-Capsule, Capsule-vs-Sphere, and Capsule-vs-Box contacts and trigger events (`IsTrigger`), plus exact segment/endcap ray-capsule intersections in `PhysicsSystem::Raycast()`.
+* **Articulated Ragdoll Preset**: Added `PhysicsSystem::SpawnRagdollChain(scene, origin)` spawning a 4-segment linked capsule rig with `DistanceJoint` and `HingeJoint` constraints, exposed under `Add -> Physics -> Physics Ragdoll Chain` and `Shift+A`.
+* **Lua 5.4 Physics Bindings**: Added `RL.Physics.Raycast(ox, oy, oz, dx, dy, dz, [maxDist])` returning `(hit, entity, hx, hy, hz, nx, ny, nz, distance)` and `entity:ApplyImpulse(x, y, z)`.
+* **Serialization v4 & Undo**: `SceneSerializer` (`BINARY_VERSION = 4`), `CommandHistory::EntitySnapshot`, and `InspectorPanel` support `CapsuleColliderComponent`.
 
-### 2. 🦴 Animation Cross-Fade Blending & Timeline Scrubbing
-* **Smooth Clip Transitions (`AnimationSystem`)**: `SkinnedMeshComponent::CrossFade(animName, duration)` blends local bone TRS (`XMVectorLerp` for translation/scale, shortest-path `XMQuaternionSlerp` for rotation) between `PreviousAnimation` and `CurrentAnimation` before computing FK `BonePalette` matrices.
-* **Timeline Scrubbing & Looping**: `AnimationSystem` evaluates `BonePalette` even when paused (`IsPlaying == false`) for instant inspector timeline scrubbing, and respects `SkinnedMeshComponent::Loop`.
-* **Lua OOP Methods**: Added `entity:CrossFadeAnimation(animName, [duration], [speed])`, `entity:SetAnimationTime(t)`, and `entity:GetAnimationTime()`.
+### 2. 🖥️ DirectX 11 Skinning, Particles & PostFX Parity (Winlator / Legacy GPUs)
+* **DX11 Skeletal Skinning**: `DX11Device` deforms `SkinnedMeshComponent` vertices against `BonePalette` into a dynamic vertex buffer for both shadow and main passes.
+* **DX11 Particle Billboards**: Simulates and renders `ParticleEmitterComponent` emitters using alpha-blended camera-facing `Quad` billboards with color/size interpolation and floor bounce.
+* **DX11 Post-Processing Parity**: SM 5.0 pixel shader applies `WorldEnvironment` `Exposure`, ACES tonemapping, and radial screen-space `VignetteIntensity`.
 
-### 3. 📜 Per-Entity `ScriptComponent` Lua 5.4 Runtime
-* **Isolated `_ENV` Sandboxes (`ScriptEngine`)**: Each entity with an enabled `ScriptComponent` runs in its own Lua `_ENV` table inheriting `_G`, supporting `OnStart(self)`, `OnUpdate(self, dt)`, `OnCollision(self, other)`, and `OnTriggerEnter(self, other)` without global symbol collisions.
-* **Inspector & Hot-Reload**: `InspectorPanel` adds `ScriptPath`, `Enabled`, and `Reload Script` controls alongside `WorldEnvironment` Post-Process and `SkinnedMeshComponent` scrubbing/cross-fade controls.
+### 3. 🎛️ Workspace Presets & Viewport Asset Drag-and-Drop
+* **Workspace Presets (`Window -> Workspace Presets`)**: Added `EditorLayer::ApplyWorkspacePreset` (`Default`, `Modeling`, `Animation`, `Scripting`, `Debug`) powered by `ImGui::DockBuilder`, persisted in `imgui.ini` via `RLWorkspace` settings handler.
+* **Viewport Drag-and-Drop**: Dragging `.gltf`/`.glb`, `.lua`, `.png`/`.jpg`/`.tga`, or `.wav`/`.mp3`/`.ogg` assets from `ContentBrowserPanel` (`"RL_ASSET_PATH"`) onto the 3D Viewport imports models or assigns scripts, textures, and audio sources directly to entities.
 
-### 4. ⚡ Async Background `AssetManager` Streaming
-* **`ThreadPool`-Backed `LoadAsync<T>`**: Decodes `MeshAsset` (glTF) and `TextureAsset` (`stb_image`) on worker threads without stalling the main thread, finalizing cache registration and callbacks safely in `AssetManager::PollAsyncLoads()`.
-* **Telemetry & Drag-Drop**: `StatsPanel` displays live cached and pending async asset counts; `ContentBrowserPanel` exposes `"RL_ASSET_PATH"` drag-and-drop payloads.
+### 4. 🎮 Standalone Runtime (`--play <scene>`)
+* Launches RLengine directly into full simulation (`ScriptComponent`, `PhysicsSystem`, `AnimationSystem`, `AudioSystem`) without editor UI panels across both DirectX 12 and DirectX 11.
 
-### 5. 💾 Binary v3 & JSON Complete Serialization
-* **`SceneSerializer` (`BINARY_VERSION = 3`)**: Full backwards-compatible persistence for `ParticleEmitterComponent`, `AudioSourceComponent`, `AudioListenerComponent`, `SkinnedMeshComponent::Loop`, and `WorldEnvironment` post-processing settings.
+---
+
+## ✨ Highlights from Alpha 4 (Included)
+* **DX12 Offscreen HDR Post-Processing (`shaders/postprocess.hlsl`)**: `DXGI_FORMAT_R16G16B16A16_FLOAT` offscreen target with 9-tap Bloom, Exposure, ACES filmic curve, and Vignette.
+* **Animation Cross-Fade Blending & Timeline Scrubbing**: `entity:CrossFadeAnimation(name, duration, [speed])`, `SetAnimationTime()`, `GetAnimationTime()`, and pause-time pose updates.
+* **Isolated Per-Entity `ScriptComponent` Runtime**: Per-entity Lua `_ENV` tables supporting `OnStart(self)`, `OnUpdate(self, dt)`, `OnCollision(self, other)`, and `OnTriggerEnter(self, other)`.
+* **Async Background Asset Streaming**: `ThreadPool`-backed `AssetManager::LoadAsync<T>()` + main-thread `PollAsyncLoads()` + live asset telemetry in `StatsPanel`.
 
 ---
 
@@ -33,5 +39,6 @@ RLengine 7.2 Alpha 4 marks the fourth major milestone in the 7.2 development cyc
 ```powershell
 .\RLengine7.2.exe --smoke-test
 .\RLengine7.2.exe --smoke-test --dx11
+.\RLengine7.2.exe --play --smoke-test 5
 ```
-Both DX12 and DX11 suites pass with exit code `0` and `0` code comments across `source/` and `shaders/`.
+All suites pass cleanly with exit code `0` and `0` code comments across `source/` and `shaders/`.

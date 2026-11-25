@@ -120,6 +120,7 @@ namespace RL::Editor
         std::optional<RigidBodyComponent> RigidBody;
         std::optional<BoxColliderComponent> BoxCollider;
         std::optional<SphereColliderComponent> SphereCollider;
+        std::optional<CapsuleColliderComponent> CapsuleCollider;
         std::optional<QuadRenderComponent> QuadRender;
         std::optional<ParticleEmitterComponent> ParticleEmitter;
         std::optional<SkinnedMeshComponent> SkinnedMesh;
@@ -181,6 +182,10 @@ namespace RL::Editor
             if (scene->HasComponent<SphereColliderComponent>(ent))
             {
                 snap.SphereCollider = scene->GetComponent<SphereColliderComponent>(ent);
+            }
+            if (scene->HasComponent<CapsuleColliderComponent>(ent))
+            {
+                snap.CapsuleCollider = scene->GetComponent<CapsuleColliderComponent>(ent);
             }
             if (scene->HasComponent<QuadRenderComponent>(ent))
             {
@@ -255,6 +260,7 @@ namespace RL::Editor
             RestoreComponent(scene, newEnt, RigidBody);
             RestoreComponent(scene, newEnt, BoxCollider);
             RestoreComponent(scene, newEnt, SphereCollider);
+            RestoreComponent(scene, newEnt, CapsuleCollider);
             RestoreComponent(scene, newEnt, QuadRender);
             RestoreComponent(scene, newEnt, ParticleEmitter);
             RestoreComponent(scene, newEnt, SkinnedMesh);

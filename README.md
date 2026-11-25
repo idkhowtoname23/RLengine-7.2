@@ -1,6 +1,6 @@
-# RLengine 7.2 Alpha 4 (Pre-Release)
+# RLengine 7.2 Alpha 5 (Pre-Release)
 
-> **Release Stage**: 🧪 **Alpha (Alpha 4 - Pre-Release)**  
+> **Release Stage**: 🧪 **Alpha (Alpha 5 - Pre-Release)**  
 > **Build Target**: C++23 | Visual Studio 18 2026 / 2022 | DirectX 12 (FL 12_1) & DirectX 11 (FL 11_0)  
 > **Code Quality**: Strict Zero Comments Policy enforced across all source, header, shader, script, and build configuration files.
 
@@ -8,7 +8,7 @@
 
 ## 📌 Overview & Development Status
 
-**RLengine 7.2 Alpha 4** represents milestone 4 of the planned 5–7 alpha phases towards the final RLengine 7.2 release. Building on Alpha 3's skeletal animation, multi-light DX12 shading, and DX11 multi-mesh parity, Alpha 4 introduces **HDR offscreen post-processing (Bloom, Exposure, ACES, Vignette)**, **smooth animation cross-fade blending & timeline scrubbing**, **isolated per-entity `ScriptComponent` Lua 5.4 runtime (`OnStart`, `OnUpdate`, `OnCollision`, `OnTriggerEnter`)**, **thread-pool asynchronous asset streaming (`AssetManager::LoadAsync<T>`)**, and **Binary v3 / JSON serialization & Undo/Redo** for Particle, Audio, SkinnedMesh, and PostProcess state.
+**RLengine 7.2 Alpha 5** represents milestone 5 of the planned 5–7 alpha phases towards the December 2026 final RLengine 7.2 release. Building directly upon Alpha 4's HDR post-processing, animation cross-fading, per-entity Lua scripting, and async asset streaming, Alpha 5 delivers **capsule collider physics & articulated ragdoll chains**, **`RL.Physics.Raycast` & `entity:ApplyImpulse` Lua APIs**, **DirectX 11 hardware parity for skeletal skinning, particle billboards, and Exposure/ACES/Vignette post-processing**, **Blender-style Workspace Presets (`Default`, `Modeling`, `Animation`, `Scripting`, `Debug`) & Viewport Drag-and-Drop**, **Binary v4 serialization**, and **Standalone Game Runtime (`--play`)**.
 
 All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (Shader Model 6.5 DXIL)** and **DirectX 11 (Shader Model 5.0 DXBC)** pipelines.
 
@@ -16,15 +16,15 @@ All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (S
 
 ## 🔍 Differences: 7.2 Alpha 3 vs Alpha 2 vs Alpha 1 vs 7.1
 
-### 1. Key Evolution: 7.2 Alpha 3 vs 7.2 Alpha 2
+### 1. Key Evolution: 7.2 Alpha 5 vs 7.2 Alpha 3
 
-| Architectural Subsystem | RLengine 7.2 Alpha 2 | RLengine 7.2 Alpha 3 (New) | Impact & Improvements |
+| Architectural Subsystem | RLengine 7.2 Alpha 3 | RLengine 7.2 Alpha 4 & Alpha 5 (New) | Impact & Improvements |
 | :--- | :--- | :--- | :--- |
-| **Skeletal Animation & Skinning** | Stub `SkinnedMeshComponent` | **Full glTF TRS Animation + `AnimationSystem` + GPU Upload** | Hierarchical FK bone solver (`XMVectorLerp`/`XMQuaternionSlerp`), up to 128 bones uploaded to GPU, and Lua OOP (`entity:PlayAnimation()`). |
-| **Lighting & Atmosphere** | Single light, static sky color | **16 Dynamic Point/Spot Lights + `WorldEnvironment` Fog** | Structured light buffer (`t1, space1`), SpotLight cone falloff, exponential atmospheric fog, and `ViewportShadingMode` (`Wireframe`..`Rendered`). |
-| **DX11 Backend Parity** | Cube primitive only | **`DX11MeshCache` + Fog + Quads + Wireframe** | Supports Cube, Sphere, Plane, Grid, Quad, and CPU/glTF meshes on legacy DX11 GPUs alongside alpha-blended billboards and environment fog. |
-| **Asset Pipeline** | Abstract `AssetManager` | **Concrete `MeshAsset`, `TextureAsset`, `ScriptAsset`** | Typed glTF, RGBA texture, and Lua importers with thread-safe queued hot-reload events (`PollHotReload`). |
-| **Serialization & Viewport UX** | Missing joints in save/undo; WASD camera | **Binary v2 + JSON Joints/Env + Blender MMB Orbit/Pan/Zoom** | Full persistence & undo for Distance/Hinge/Fixed joints & WorldEnvironment, gizmo snapping, AABB picking, and Inspector UI. |
+| **Post-Processing** | Tonemapping in mesh shader only | **HDR `R16G16B16A16_FLOAT` Target + `postprocess.hlsl` + DX11 PostFX** | 9-tap soft Bloom, Exposure, ACES filmic curve, and Vignette controlled via `WorldEnvironment`. |
+| **Skeletal Animation** | Single-clip FK `BonePalette` | **Cross-Fade Clip Blending + Timeline Scrubbing + DX11 Skinning** | `CrossFadeAnimation()`, `XMQuaternionSlerp` pose transitions, pause scrubbing, and Winlator/DX11 skinning parity. |
+| **Physics & Lua API** | Box/Sphere colliders & Joints | **`CapsuleColliderComponent`, `SpawnRagdollChain`, `RL.Physics.Raycast`, `ApplyImpulse`** | Capsule collision/trigger solver, 4-segment articulated ragdoll chains, and Lua raycast queries. |
+| **Scripting & Assets** | Global `main.lua`, sync loaders | **Per-Entity `_ENV` `ScriptComponent` + `ThreadPool` `LoadAsync<T>`** | Isolated `OnStart`/`OnUpdate`/`OnCollision`/`OnTriggerEnter` per entity plus background decoding. |
+| **Editor & Runtime** | Fixed Blender layout | **Workspace Presets + Viewport Drag-and-Drop + `--play` Standalone Mode** | `Default/Modeling/Animation/Scripting/Debug` layouts, drag assets from Content Browser, and headless-editor `--play <scene>`. |
 
 ### 2. Comprehensive Comparison: 7.2 Alpha 3 vs 7.1
 
@@ -122,7 +122,7 @@ cmake --build build --config Release --parallel
 
 ## 📦 Pre-Release Archive Contents
 
-The pre-release binary archive (`RLengine-7.2-Alpha-4-Windows-x64.zip`) contains:
+The pre-release binary archive (`RLengine-7.2-Alpha-5-Windows-x64.zip`) contains:
 * `RLengine7.2.exe`: Optimized Release executable.
 * `dxcompiler.dll`, `dxil.dll`: Official Microsoft DirectX Shader Compiler runtime.
 * `shaders/`: DX12 and DX11 HLSL shaders (`mesh3d.hlsl`, `quad.hlsl`, `grid3d.hlsl`, `shadow_depth.hlsl`).
