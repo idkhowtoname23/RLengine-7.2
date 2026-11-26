@@ -1,14 +1,14 @@
-# RLengine 7.2 (Beta / Release Candidate)
+# RLengine 7.2 (`v7.2.0`)
 
-> **Release Stage**: 🚀 **Beta / Release Candidate (`v7.2.0-beta.1`)**  
+> **Release Stage**: ✅ **Final Release (`v7.2.0`)**  
 > **Build Target**: C++23 | Visual Studio 18 2026 / 2022 | DirectX 12 (FL 12_1) & DirectX 11 (FL 11_0)  
 > **Code Quality**: Strict Zero Comments Policy enforced across all source, header, shader, script, and build configuration files.
 
 ---
 
-## 📌 Overview & Development Status
+## 📌 Overview & Release Status
 
-**RLengine 7.2 Beta** completes the 7.2 feature roadmap toward the December 2026 final release. Engineered to modern **C++23** standards, it unifies all Alpha 1–5 systems with **One-Click Standalone Game Export (`File -> Export Game...` + `game.rlconfig`)**, **DirectX 11 Point/Spot Light Shadow Mapping**, **Analytic 2-Bone IK + Capsule/Ragdoll stability**, **Visual Frame Profiler (`FrameProfiler` + `StatsPanel` graphs)**, and **Binary v5 serialization**.
+**RLengine 7.2 (`v7.2.0`)** is the complete, verified final release of the 7.2 engine series. Engineered to modern **C++23** standards, RLengine 7.2 combines **DirectX 12 (Shader Model 6.5 DXIL)** and **DirectX 11 (Shader Model 5.0 DXBC)** dual-backend rendering with **15-axis SAT OBB & Capsule physics**, **articulated joints & ragdoll chains**, **glTF skeletal skinning with cross-fade blending & 2-Bone IK**, **HDR Bloom/ACES/Vignette post-processing**, **3D spatial audio**, **isolated per-entity Lua 5.4 scripting**, **async `ThreadPool` asset streaming**, **Blender 4.x workspace presets**, and **One-Click Standalone Game Export (`game.rlconfig`)**.
 
 All automated smoke tests pass cleanly with code `0` across both **DirectX 12 (Shader Model 6.5 DXIL)** and **DirectX 11 (Shader Model 5.0 DXBC)** pipelines.
 
@@ -122,7 +122,7 @@ cmake --build build --config Release --parallel
 
 ## 📦 Pre-Release Archive Contents
 
-The release archive (`RLengine-7.2-Beta-Windows-x64.zip`) contains:
+The release archive (`RLengine-7.2-Windows-x64.zip`) contains:
 * `RLengine7.2.exe`: Optimized Release executable.
 * `dxcompiler.dll`, `dxil.dll`: Official Microsoft DirectX Shader Compiler runtime.
 * `shaders/`: DX12 and DX11 HLSL shaders (`mesh3d.hlsl`, `quad.hlsl`, `grid3d.hlsl`, `shadow_depth.hlsl`).
