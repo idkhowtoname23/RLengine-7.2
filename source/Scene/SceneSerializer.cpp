@@ -21,7 +21,7 @@ namespace RL
     using namespace DirectX;
 
     static constexpr u32 BINARY_MAGIC = 0x534C5221;
-    static constexpr u32 BINARY_VERSION = 4;
+    static constexpr u32 BINARY_VERSION = 5;
 
     enum ComponentMask : u32
     {
@@ -625,7 +625,13 @@ namespace RL
                 out << "        \"animation_speed\": " << sk.AnimationSpeed << ",\n";
                 out << "        \"loop\": " << (sk.Loop ? "true" : "false") << ",\n";
                 out << "        \"is_playing\": " << (sk.IsPlaying ? "true" : "false") << ",\n";
-                out << "        \"is_visible\": " << (sk.IsVisible ? "true" : "false") << "\n";
+                out << "        \"is_visible\": " << (sk.IsVisible ? "true" : "false") << ",\n";
+                out << "        \"enable_ik\": " << (sk.EnableIK ? "true" : "false") << ",\n";
+                out << "        \"ik_root_bone\": " << sk.IKRootBone << ",\n";
+                out << "        \"ik_mid_bone\": " << sk.IKMidBone << ",\n";
+                out << "        \"ik_end_bone\": " << sk.IKEndBone << ",\n";
+                out << "        \"ik_target_pos\": [" << sk.IKTargetPos.x << ", " << sk.IKTargetPos.y << ", " << sk.IKTargetPos.z << "],\n";
+                out << "        \"ik_weight\": " << sk.IKWeight << "\n";
                 out << "      }";
             }
 
@@ -943,6 +949,12 @@ namespace RL
                 if (const auto* lp = skObj->Find("loop"); lp && lp->IsBool()) sk.Loop = lp->BoolVal;
                 if (const auto* ip = skObj->Find("is_playing"); ip && ip->IsBool()) sk.IsPlaying = ip->BoolVal;
                 if (const auto* iv = skObj->Find("is_visible"); iv && iv->IsBool()) sk.IsVisible = iv->BoolVal;
+                if (const auto* eik = skObj->Find("enable_ik"); eik && eik->IsBool()) sk.EnableIK = eik->BoolVal;
+                if (const auto* rbn = skObj->Find("ik_root_bone"); rbn && rbn->IsNumber()) sk.IKRootBone = static_cast<u32>(rbn->AsInt());
+                if (const auto* mbn = skObj->Find("ik_mid_bone"); mbn && mbn->IsNumber()) sk.IKMidBone = static_cast<u32>(mbn->AsInt());
+                if (const auto* ebn = skObj->Find("ik_end_bone"); ebn && ebn->IsNumber()) sk.IKEndBone = static_cast<u32>(ebn->AsInt());
+                sk.IKTargetPos = ReadVec3(skObj->Find("ik_target_pos"), sk.IKTargetPos);
+                if (const auto* ikw = skObj->Find("ik_weight"); ikw && ikw->IsNumber()) sk.IKWeight = ikw->AsFloat();
             }
 
             if (const auto* asObj = entNode.Find("audio_source"); asObj && asObj->IsObject())
@@ -1284,8 +1296,13 @@ namespace RL
                 WriteBinaryString(out, sk.SkeletonName);
                 WriteBinaryString(out, sk.CurrentAnimation);
                 WriteBinary(out, sk.AnimationSpeed);
-                const u8 sf = (sk.IsPlaying ? 1u : 0u) | (sk.IsVisible ? 2u : 0u) | (sk.Loop ? 4u : 0u);
+                const u8 sf = (sk.IsPlaying ? 1u : 0u) | (sk.IsVisible ? 2u : 0u) | (sk.Loop ? 4u : 0u) | (sk.EnableIK ? 8u : 0u);
                 WriteBinary(out, sf);
+                WriteBinary(out, sk.IKRootBone);
+                WriteBinary(out, sk.IKMidBone);
+                WriteBinary(out, sk.IKEndBone);
+                WriteBinary(out, sk.IKTargetPos);
+                WriteBinary(out, sk.IKWeight);
             }
 
             if (mask & Mask_AudioSource)
@@ -1610,6 +1627,15 @@ namespace RL
                 sk.IsPlaying = (sf & 1u) != 0;
                 sk.IsVisible = (sf & 2u) != 0;
                 sk.Loop = (version >= 3) ? ((sf & 4u) != 0) : true;
+                if (version >= 5)
+                {
+                    sk.EnableIK = (sf & 8u) != 0;
+                    ReadBinary(in, sk.IKRootBone);
+                    ReadBinary(in, sk.IKMidBone);
+                    ReadBinary(in, sk.IKEndBone);
+                    ReadBinary(in, sk.IKTargetPos);
+                    ReadBinary(in, sk.IKWeight);
+                }
             }
 
             if (mask & Mask_AudioSource)

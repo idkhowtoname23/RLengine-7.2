@@ -143,6 +143,7 @@ namespace RL
 
         [[nodiscard]] ID3D11DepthStencilView*   GetShadowDSV()       const noexcept { return m_shadowDSV.Get(); }
         [[nodiscard]] ID3D11ShaderResourceView* GetShadowSRV()       const noexcept { return m_shadowSRV.Get(); }
+        [[nodiscard]] bool HasPointShadowResources() const noexcept { return m_pointShadowDSV != nullptr && m_pointShadowSRV != nullptr; }
         [[nodiscard]] ID3D11ShaderResourceView* GetFallbackSRV()     const noexcept { return m_fallbackSRV.Get(); }
         [[nodiscard]] ID3D11ShaderResourceView* GetFallbackNormalSRV() const noexcept { return m_fallbackNormalSRV.Get(); }
         [[nodiscard]] ID3D11SamplerState*       GetLinearSampler()   const noexcept { return m_linearSampler.Get(); }
@@ -208,7 +209,12 @@ namespace RL
         ComPtr<ID3D11Texture2D>          m_shadowTexture;
         ComPtr<ID3D11DepthStencilView>   m_shadowDSV;
         ComPtr<ID3D11ShaderResourceView> m_shadowSRV;
+        ComPtr<ID3D11Texture2D>          m_pointShadowTex;
+        ComPtr<ID3D11DepthStencilView>   m_pointShadowDSV;
+        ComPtr<ID3D11ShaderResourceView> m_pointShadowSRV;
         ComPtr<ID3D11SamplerState>       m_shadowSampler;
+        std::vector<u64>                 m_activeEmitterScratch;
+        std::vector<DX11Vertex>          m_particleVertexScratch;
 
         ComPtr<ID3D11Texture2D>          m_fallbackTexture;
         ComPtr<ID3D11ShaderResourceView> m_fallbackSRV;

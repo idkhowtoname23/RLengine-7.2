@@ -838,6 +838,31 @@ namespace RL::Editor
                     sk.PreviousAnimation.c_str(), sk.BlendTime, sk.BlendDuration);
             }
             ImGui::TextDisabled("Bone Palette: %zu", sk.BonePalette.size());
+
+            ImGui::Separator();
+            LabeledField("Enable IK", 95.0f);
+            ImGui::Checkbox("##sk_ik_enable", &sk.EnableIK);
+
+            LabeledField("IK Root Bone", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragScalar("##sk_ik_root", ImGuiDataType_U32, &sk.IKRootBone, 0.2f);
+
+            LabeledField("IK Mid Bone", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragScalar("##sk_ik_mid", ImGuiDataType_U32, &sk.IKMidBone, 0.2f);
+
+            LabeledField("IK End Bone", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragScalar("##sk_ik_end", ImGuiDataType_U32, &sk.IKEndBone, 0.2f);
+
+            LabeledField("IK Target", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat3("##sk_ik_target", &sk.IKTargetPos.x, 0.05f);
+
+            LabeledField("IK Weight", 95.0f);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##sk_ik_weight", &sk.IKWeight, 0.0f, 1.0f, "%.2f");
+
             ImGui::Spacing();
         }
 

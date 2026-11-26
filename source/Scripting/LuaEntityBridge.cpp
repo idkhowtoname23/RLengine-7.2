@@ -107,6 +107,9 @@ namespace RL
             lua_pushcfunction(L, &LuaEntityBridge::Entity_IsAnimationPlaying);
             lua_setfield(L, -2, "IsAnimationPlaying");
 
+            lua_pushcfunction(L, &LuaEntityBridge::Entity_SetIKTarget);
+            lua_setfield(L, -2, "SetIKTarget");
+
             lua_pushcfunction(L, &LuaEntityBridge::Entity_IsValid);
             lua_setfield(L, -2, "IsValid");
 
@@ -883,6 +886,37 @@ namespace RL
         const auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(Entity(ud->entityID));
         lua_pushboolean(L, (skinned && skinned->IsPlaying) ? 1 : 0);
         return 1;
+    }
+
+    int LuaEntityBridge::Entity_SetIKTarget(lua_State* L)
+    {
+        auto* ud = CheckEntity(L, 1);
+        if (!ud || !s_scene || !s_scene->IsValid(Entity(ud->entityID)))
+        {
+            return 0;
+        }
+
+        const bool enabled = lua_toboolean(L, 2) != 0;
+        const f32 x = static_cast<f32>(luaL_optnumber(L, 3, 0.0));
+        const f32 y = static_cast<f32>(luaL_optnumber(L, 4, 0.0));
+        const f32 z = static_cast<f32>(luaL_optnumber(L, 5, 0.0));
+        const f32 weight = static_cast<f32>(luaL_optnumber(L, 6, 1.0));
+
+        const Entity ent(ud->entityID);
+        auto* skinned = s_scene->TryGetComponent<SkinnedMeshComponent>(ent);
+        if (!skinned)
+        {
+            skinned = &s_scene->AddComponent<SkinnedMeshComponent>(ent);
+        }
+
+        if (skinned)
+        {
+            skinned->EnableIK = enabled;
+            skinned->IKTargetPos = { x, y, z };
+            skinned->IKWeight = std::clamp(weight, 0.0f, 1.0f);
+        }
+
+        return 0;
     }
 
     int LuaEntityBridge::Entity_IsValid(lua_State* L)

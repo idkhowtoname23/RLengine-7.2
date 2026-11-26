@@ -256,6 +256,15 @@ namespace RL
         int m_stressCountSlider = 5000;
         bool m_uniformScale = true;
         bool m_openAddPopup = false;
+        bool m_openExportModal = false;
+        char m_exportTitle[128] = "RLengine Game";
+        char m_exportOutputDir[260] = "ExportedGame";
+        int m_exportWidth = 1280;
+        int m_exportHeight = 720;
+        bool m_exportForceDX11 = false;
+        bool m_exportBinaryScene = true;
+        bool m_exportLastSuccess = false;
+        std::string m_exportStatusMessage;
         ID3D12Device* m_dx12Device = nullptr;
         bool m_gizmoDragging = false;
         TransformComponent m_gizmoStartTransform{};

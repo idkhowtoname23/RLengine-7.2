@@ -6,6 +6,7 @@
 #include "Audio/AudioSystem.hpp"
 #include "Core/Events/EventBus.hpp"
 #include "Core/Events/CommonEvents.hpp"
+#include "Core/Profiler.hpp"
 
 namespace RL
 {
@@ -313,24 +314,29 @@ namespace RL
     {
         if (m_physicsSystem)
         {
+            ScopedProfileTimer timer(ProfileScope::Physics);
             m_physicsSystem->Step(*this, dt);
         }
         if (m_animationSystem)
         {
+            ScopedProfileTimer timer(ProfileScope::Animation);
             m_animationSystem->Update(*this, dt);
         }
         if (m_particleSystem)
         {
+            ScopedProfileTimer timer(ProfileScope::Particles);
             m_particleSystem->Update(*this, dt);
         }
         if (m_audioSystem)
         {
+            ScopedProfileTimer timer(ProfileScope::Audio);
             m_audioSystem->Update(*this, dt);
         }
     }
 
     void Scene::Render(ID3D12GraphicsCommandList* cmdList, u32 frameIndex)
     {
+        ScopedProfileTimer timer(ProfileScope::Render);
         if (m_renderSystem)
         {
             m_renderSystem->Render(*this, cmdList, frameIndex);

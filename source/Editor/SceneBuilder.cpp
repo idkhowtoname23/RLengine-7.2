@@ -4,6 +4,7 @@
 
 #include "Editor/SceneBuilder.hpp"
 #include "Editor/EditorLayer.hpp"
+#include "Editor/GameExporter.hpp"
 #include "Platform/FileSystem/VFS.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scene/Scene.hpp"
@@ -544,6 +545,12 @@ namespace RL
                     }
                 }
                 ImGui::Separator();
+                if (ImGui::MenuItem("Export Game..."))
+                {
+                    m_openExportModal = true;
+                    m_exportStatusMessage.clear();
+                }
+                ImGui::Separator();
                 if (ImGui::MenuItem("Exit", "Alt+F4"))
                 {
                     PostQuitMessage(0);
@@ -878,6 +885,73 @@ namespace RL
             ImGui::PopStyleColor();
 
             ImGui::EndMainMenuBar();
+        }
+
+        if (m_openExportModal)
+        {
+            ImGui::OpenPopup("Export Standalone Game");
+            m_openExportModal = false;
+        }
+
+        const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal("Export Standalone Game", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::InputText("Game Title", m_exportTitle, sizeof(m_exportTitle));
+            ImGui::InputText("Output Directory", m_exportOutputDir, sizeof(m_exportOutputDir));
+            ImGui::InputInt("Window Width", &m_exportWidth);
+            ImGui::InputInt("Window Height", &m_exportHeight);
+            if (m_exportWidth < 320) m_exportWidth = 320;
+            if (m_exportHeight < 240) m_exportHeight = 240;
+            ImGui::Checkbox("Force DX11", &m_exportForceDX11);
+            ImGui::Checkbox("Binary Scene", &m_exportBinaryScene);
+
+            ImGui::Separator();
+
+            if (ImGui::Button("Export", ImVec2(120.0f, 0.0f)))
+            {
+                GameExportConfig config;
+                config.GameTitle = m_exportTitle;
+                config.OutputDir = m_exportOutputDir;
+                config.EntrySceneName = m_exportBinaryScene ? "main.rlbin" : "main.rlscene";
+                config.WindowWidth = static_cast<u32>(m_exportWidth);
+                config.WindowHeight = static_cast<u32>(m_exportHeight);
+                config.ForceDX11 = m_exportForceDX11;
+                config.BinaryScene = m_exportBinaryScene;
+
+                const GameExportResult exportResult = GameExporter::ExportGame(scene, config);
+                m_exportLastSuccess = exportResult.Success;
+                if (exportResult.Success)
+                {
+                    m_exportStatusMessage = std::format(
+                        "Exported {} files to {}",
+                        exportResult.FilesCopied,
+                        exportResult.ExecutablePath.parent_path().string());
+                }
+                else
+                {
+                    m_exportStatusMessage = "Export failed: " + exportResult.ErrorMessage;
+                }
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f)))
+            {
+                ImGui::CloseCurrentPopup();
+            }
+
+            if (!m_exportStatusMessage.empty())
+            {
+                ImGui::Spacing();
+                const ImVec4 statusColor = m_exportLastSuccess
+                    ? ImVec4(0.30f, 0.85f, 0.40f, 1.0f)
+                    : ImVec4(0.95f, 0.30f, 0.30f, 1.0f);
+                ImGui::PushStyleColor(ImGuiCol_Text, statusColor);
+                ImGui::TextWrapped("%s", m_exportStatusMessage.c_str());
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::EndPopup();
         }
     }
 

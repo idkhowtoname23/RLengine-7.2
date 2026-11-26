@@ -26,7 +26,9 @@
 #include "Platform/FileSystem/VFS.hpp"
 #include "Core/Events/EventBus.hpp"
 #include "Core/Events/CommonEvents.hpp"
+#include "Core/Profiler.hpp"
 #include "Editor/History/CommandHistory.hpp"
+#include "Editor/GameExporter.hpp"
 
 #include <lua.hpp>
 #include <filesystem>
@@ -149,6 +151,42 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     VFS::Mount("scripts://", scriptsRoot);
     VFS::PrintMounts();
     AssetManager::RegisterDefaultImporters();
+
+    const std::filesystem::path gameConfigPath = exeDir / "game.rlconfig";
+    if (!smokeTest && std::filesystem::exists(gameConfigPath))
+    {
+        std::ifstream cfgStream(gameConfigPath);
+        if (cfgStream.is_open())
+        {
+            const std::string cfgText((std::istreambuf_iterator<char>(cfgStream)), std::istreambuf_iterator<char>());
+            auto extractStr = [&](std::string_view key) -> std::string {
+                const std::string pat = std::format("\"{}\"", key);
+                usize pos = cfgText.find(pat);
+                if (pos == std::string::npos) return {};
+                pos = cfgText.find(':', pos + pat.size());
+                if (pos == std::string::npos) return {};
+                const usize q1 = cfgText.find('"', pos);
+                if (q1 == std::string::npos) return {};
+                const usize q2 = cfgText.find('"', q1 + 1);
+                if (q2 == std::string::npos) return {};
+                return cfgText.substr(q1 + 1, q2 - q1 - 1);
+            };
+            if (!playMode)
+            {
+                const std::string entry = extractStr("entry_scene");
+                if (!entry.empty())
+                {
+                    playMode = true;
+                    playScenePath = (exeDir / entry).string();
+                }
+            }
+            if (cfgText.find("\"dx11\": true") != std::string::npos || cfgText.find("\"dx11\":true") != std::string::npos)
+            {
+                useDX11 = true;
+            }
+            RL_LOG_INFO("Detected game.rlconfig: launching standalone runtime ('{}', dx11={}).", playScenePath, useDX11);
+        }
+    }
 
     if (smokeTest)
     {
@@ -663,6 +701,86 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             }
 
             RL_LOG_INFO("Smoke test Alpha 5: CapsuleCollider, RagdollChain, Binary v4 & Lua Raycast/ApplyImpulse validated successfully.");
+
+            Scene ikScene;
+            AnimationSystem ikAnim;
+            ikScene.SetAnimationSystem(&ikAnim);
+            ikAnim.CreateProceduralTestRig("BetaIKRig");
+            Entity ikEnt = ikScene.CreateEntity("IKActor");
+            auto& ikSk = ikScene.AddComponent<SkinnedMeshComponent>(ikEnt);
+            ikSk.ModelPath = "BetaIKRig";
+            ikSk.Play("Idle");
+            ikSk.EnableIK = false;
+            ikScene.Update(0.016f);
+            if (ikScene.GetComponent<SkinnedMeshComponent>(ikEnt).BonePalette.size() < 3)
+            {
+                RL_LOG_FATAL("Alpha 6 / Beta 3-bone procedural test rig expected >= 3 bones");
+                return -111;
+            }
+            const f32 noIkX = ikScene.GetComponent<SkinnedMeshComponent>(ikEnt).BonePalette[2]._41;
+            auto& ikCompMut = ikScene.GetComponent<SkinnedMeshComponent>(ikEnt);
+            ikCompMut.EnableIK = true;
+            ikCompMut.IKRootBone = 0;
+            ikCompMut.IKMidBone = 1;
+            ikCompMut.IKEndBone = 2;
+            ikCompMut.IKTargetPos = { 1.2f, 1.0f, 0.0f };
+            ikCompMut.IKWeight = 1.0f;
+            ikScene.Update(0.016f);
+            const f32 withIkX = ikScene.GetComponent<SkinnedMeshComponent>(ikEnt).BonePalette[2]._41;
+            if (std::abs(withIkX - noIkX) < 1e-3f)
+            {
+                RL_LOG_FATAL("Alpha 6 / Beta 2-Bone IK solver did not adjust end bone ({} vs {})", noIkX, withIkX);
+                return -111;
+            }
+
+            const std::string v5J = (std::filesystem::temp_directory_path() / "rlengine_a6_v5.json").string();
+            const std::string v5B = (std::filesystem::temp_directory_path() / "rlengine_a6_v5.bin").string();
+            SceneSerializer::Save(ikScene, v5J);
+            SceneSerializer::Save(ikScene, v5B);
+            Scene loadV5J, loadV5B;
+            const bool okV5J = SceneSerializer::Load(loadV5J, nullptr, v5J);
+            const bool okV5B = SceneSerializer::Load(loadV5B, nullptr, v5B);
+            std::filesystem::remove(v5J, a4Ec);
+            std::filesystem::remove(v5B, a4Ec);
+            auto checkV5 = [](const Scene& s) -> bool {
+                const auto ents = s.GetAliveEntities();
+                if (ents.size() != 1) return false;
+                const auto* k = s.TryGetComponent<SkinnedMeshComponent>(ents[0]);
+                return k && k->EnableIK && k->IKRootBone == 0 && k->IKMidBone == 1 && k->IKEndBone == 2 &&
+                       std::abs(k->IKTargetPos.x - 1.2f) < 1e-4f && std::abs(k->IKWeight - 1.0f) < 1e-4f;
+            };
+            if (!okV5J || !okV5B || !checkV5(loadV5J) || !checkV5(loadV5B))
+            {
+                RL_LOG_FATAL("Alpha 6 / Beta Binary v5 / JSON IK serialization validation failed");
+                return -112;
+            }
+
+            if (FrameProfiler::Get().GetLastMs(ProfileScope::Physics) < 0.0f ||
+                FrameProfiler::Get().GetLastMs(ProfileScope::Animation) < 0.0f)
+            {
+                RL_LOG_FATAL("Alpha 6 / Beta FrameProfiler validation failed");
+                return -113;
+            }
+
+            const std::filesystem::path expDir = std::filesystem::temp_directory_path() / "rlengine_beta_export";
+            std::filesystem::remove_all(expDir, a4Ec);
+            GameExportConfig expCfg;
+            expCfg.GameTitle = "BetaSmokeGame";
+            expCfg.OutputDir = expDir.string();
+            expCfg.EntrySceneName = "main.rlscene";
+            const GameExportResult expRes = GameExporter::ExportGame(ikScene, expCfg);
+            const bool expOk = expRes.Success &&
+                               std::filesystem::exists(expRes.ConfigPath) &&
+                               std::filesystem::exists(expRes.ScenePath) &&
+                               std::filesystem::exists(expRes.ExecutablePath);
+            std::filesystem::remove_all(expDir, a4Ec);
+            if (!expOk)
+            {
+                RL_LOG_FATAL("Alpha 6 / Beta GameExporter validation failed: {}", expRes.ErrorMessage);
+                return -114;
+            }
+
+            RL_LOG_INFO("Smoke test Alpha 6 / Beta: 2-Bone IK, Binary v5, FrameProfiler & GameExporter validated successfully.");
         }
     }
 
@@ -885,6 +1003,11 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
                 {
                     RL_LOG_FATAL("DirectX 11 Alpha 5 smoke test failed: ParticleEmitter parity rendered 0 particles");
                     return -109;
+                }
+                if (!dx11.HasPointShadowResources())
+                {
+                    RL_LOG_FATAL("DirectX 11 Alpha 6 / Beta smoke test failed: PointShadowResources not initialized");
+                    return -115;
                 }
                 const usize originalCount = scene.GetAliveEntityCount();
                 const std::string jsonPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.json").string();

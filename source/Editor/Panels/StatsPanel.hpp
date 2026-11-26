@@ -4,6 +4,7 @@
 #include "Editor/History/CommandHistory.hpp"
 #include "Assets/AssetManager.hpp"
 #include "Core/Types.hpp"
+#include "Core/Profiler.hpp"
 #include "Core/Memory/MemoryStats.hpp"
 
 #include <imgui.h>
@@ -118,6 +119,58 @@ namespace RL::Editor
             ImGui::Text("Assets:       %zu cached (%zu pending)",
                 RL::AssetManager::GetCachedAssetCount(),
                 RL::AssetManager::GetPendingAsyncCount());
+
+            ImGui::Spacing();
+
+            if (ImGui::CollapsingHeader("Frame Profiler (ms)", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                const auto& profiler = RL::FrameProfiler::Get();
+                constexpr const char* kScopeNames[] = {
+                    "Physics", "Animation", "Particles", "Audio", "Render"
+                };
+                constexpr f32 kFrameBudgetMs = 16.67f;
+
+                for (usize i = 0; i < RL::FrameProfiler::kScopeCount; ++i)
+                {
+                    const auto scope = static_cast<RL::ProfileScope>(i);
+                    const f32 ms = profiler.GetLastMs(scope);
+                    const f32 frac = std::clamp(ms / kFrameBudgetMs, 0.0f, 1.0f);
+                    char barOverlay[32];
+                    std::snprintf(barOverlay, sizeof(barOverlay), "%.2f ms", ms);
+
+                    ImGui::Text("%-10s", kScopeNames[i]);
+                    ImGui::SameLine(85.0f);
+                    ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), barOverlay);
+                }
+
+                ImGui::Spacing();
+
+                const auto& renderHist = profiler.GetHistory(RL::ProfileScope::Render);
+                const i32 renderHead = static_cast<i32>(profiler.GetHistoryHead(RL::ProfileScope::Render));
+                const f32 maxRender = (std::max)(1.0f, *std::max_element(renderHist.begin(), renderHist.end()));
+                char renderOverlay[32];
+                std::snprintf(renderOverlay, sizeof(renderOverlay), "Render: %.2f ms",
+                    profiler.GetLastMs(RL::ProfileScope::Render));
+                ImGui::PlotLines("##prof_render",
+                    renderHist.data(),
+                    static_cast<i32>(RL::FrameProfiler::kHistorySize),
+                    renderHead,
+                    renderOverlay, 0.0f, maxRender,
+                    ImVec2(0, 48));
+
+                const auto& physicsHist = profiler.GetHistory(RL::ProfileScope::Physics);
+                const i32 physicsHead = static_cast<i32>(profiler.GetHistoryHead(RL::ProfileScope::Physics));
+                const f32 maxPhysics = (std::max)(1.0f, *std::max_element(physicsHist.begin(), physicsHist.end()));
+                char physicsOverlay[32];
+                std::snprintf(physicsOverlay, sizeof(physicsOverlay), "Physics: %.2f ms",
+                    profiler.GetLastMs(RL::ProfileScope::Physics));
+                ImGui::PlotLines("##prof_physics",
+                    physicsHist.data(),
+                    static_cast<i32>(RL::FrameProfiler::kHistorySize),
+                    physicsHead,
+                    physicsOverlay, 0.0f, maxPhysics,
+                    ImVec2(0, 48));
+            }
         }
 
     private:

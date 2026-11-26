@@ -1307,13 +1307,29 @@ namespace RL
                     if (dispLenSq < 1e-8f) continue;
 
                     f32 bottomY = 0.0f;
+                    f32 minDispY = disp.y;
                     if (b1.ShapeType == ColliderShapeType::Sphere)
                     {
                         bottomY = b1.SphereShape.Center.y - b1.SphereShape.Radius;
                     }
                     else if (b1.ShapeType == ColliderShapeType::Capsule)
                     {
-                        bottomY = std::min(b1.CapsuleShape.A.y, b1.CapsuleShape.B.y) - b1.CapsuleShape.Radius;
+                        const DirectX::XMFLOAT3 rA = Sub(b1.CapsuleShape.A, b1.Transform->Position);
+                        const DirectX::XMFLOAT3 rB = Sub(b1.CapsuleShape.B, b1.Transform->Position);
+                        const f32 dispAY = disp.y + Cross(b1.RigidBody->AngularVelocity, rA).y * subDt;
+                        const f32 dispBY = disp.y + Cross(b1.RigidBody->AngularVelocity, rB).y * subDt;
+                        const f32 botA = b1.CapsuleShape.A.y - b1.CapsuleShape.Radius;
+                        const f32 botB = b1.CapsuleShape.B.y - b1.CapsuleShape.Radius;
+                        if (botA <= botB)
+                        {
+                            bottomY = botA;
+                            minDispY = std::min(disp.y, dispAY);
+                        }
+                        else
+                        {
+                            bottomY = botB;
+                            minDispY = std::min(disp.y, dispBY);
+                        }
                     }
                     else
                     {
@@ -1323,10 +1339,10 @@ namespace RL
                         bottomY = b1.BoxShape.Center.y - hy;
                     }
 
-                    if (disp.y < -1e-6f && bottomY > 1e-3f)
+                    if (minDispY < -1e-6f && bottomY > 1e-3f && (bottomY + minDispY) < 0.0f)
                     {
-                        const f32 t = bottomY / (-disp.y);
-                        if (t >= 0.0f && t < minTOIs[i])
+                        const f32 t = std::clamp(bottomY / (-minDispY), 0.0f, 1.0f);
+                        if (t < minTOIs[i])
                         {
                             minTOIs[i] = t;
                             hitGroundFlags[i] = true;
@@ -1877,6 +1893,45 @@ namespace RL
 
             finalActiveTriggerPairs = std::move(stepActiveTriggers);
             SolveConstraints(scene, subDt);
+
+            constexpr f32 kSleepSpeedThreshold = 0.03f;
+            constexpr f32 kSleepSpeedThresholdSq = kSleepSpeedThreshold * kSleepSpeedThreshold;
+            constexpr f32 kSnapZeroThresholdSq = 0.005f * 0.005f;
+            const f32 sleepDamp = std::max(0.0f, 1.0f - 25.0f * subDt);
+
+            for (usize i = 0; i < numBodies; ++i)
+            {
+                auto& b = bodies[i];
+                if (!b.IsDynamic || !b.RigidBody) continue;
+                auto& rb = *b.RigidBody;
+                if (!rb.IsGrounded) continue;
+
+                const f32 linSq = Dot(rb.LinearVelocity, rb.LinearVelocity);
+                if (linSq < kSleepSpeedThresholdSq)
+                {
+                    if (linSq < kSnapZeroThresholdSq)
+                    {
+                        rb.LinearVelocity = { 0.0f, 0.0f, 0.0f };
+                    }
+                    else
+                    {
+                        rb.LinearVelocity = Mul(rb.LinearVelocity, sleepDamp);
+                    }
+                }
+
+                const f32 angSq = Dot(rb.AngularVelocity, rb.AngularVelocity);
+                if (angSq < kSleepSpeedThresholdSq)
+                {
+                    if (angSq < kSnapZeroThresholdSq)
+                    {
+                        rb.AngularVelocity = { 0.0f, 0.0f, 0.0f };
+                    }
+                    else
+                    {
+                        rb.AngularVelocity = Mul(rb.AngularVelocity, sleepDamp);
+                    }
+                }
+            }
         }
 
         std::vector<TriggerEvent> newEvents;
@@ -1951,6 +2006,15 @@ namespace RL
         if (!distJointPool && !hingeJointPool && !fixedJointPool) return;
 
         constexpr int kConstraintIterations = 2;
+        constexpr f32 kMaxConstraintAngularSpeed = 20.0f;
+        const auto clampAngVel = [](DirectX::XMFLOAT3& v) noexcept {
+            const f32 lenSq = Dot(v, v);
+            if (lenSq > kMaxConstraintAngularSpeed * kMaxConstraintAngularSpeed)
+            {
+                const f32 invLen = kMaxConstraintAngularSpeed / std::sqrt(lenSq);
+                v = Mul(v, invLen);
+            }
+        };
         for (int iter = 0; iter < kConstraintIterations; ++iter)
         {
             if (distJointPool)
@@ -2049,11 +2113,13 @@ namespace RL
                         {
                             rbA->LinearVelocity = Sub(rbA->LinearVelocity, Mul(impulse, invMassA));
                             rbA->AngularVelocity = Sub(rbA->AngularVelocity, Mul(invItA, impulseMag));
+                            clampAngVel(rbA->AngularVelocity);
                         }
                         if (isDynB)
                         {
                             rbB->LinearVelocity = Add(rbB->LinearVelocity, Mul(impulse, invMassB));
                             rbB->AngularVelocity = Add(rbB->AngularVelocity, Mul(invItB, impulseMag));
+                            clampAngVel(rbB->AngularVelocity);
                         }
                     }
                 }
@@ -2249,14 +2315,18 @@ namespace RL
                                 if (isDynA)
                                 {
                                     rbA->AngularVelocity = Sub(rbA->AngularVelocity, Mul(axisWorld, speedAlongAxis * (invMassA / invMassSum)));
+                                    clampAngVel(rbA->AngularVelocity);
                                 }
                                 if (isDynB)
                                 {
                                     rbB->AngularVelocity = Add(rbB->AngularVelocity, Mul(axisWorld, speedAlongAxis * (invMassB / invMassSum)));
+                                    clampAngVel(rbB->AngularVelocity);
                                 }
                             }
                         }
                     }
+                    if (isDynA) clampAngVel(rbA->AngularVelocity);
+                    if (isDynB) clampAngVel(rbB->AngularVelocity);
                 }
             }
 
@@ -2351,6 +2421,7 @@ namespace RL
                         trA->Rotation = Add(trA->Rotation, Mul(rotError, wA));
                         rbA->LinearVelocity = Add(rbA->LinearVelocity, Mul(linImpulse, invMassA));
                         rbA->AngularVelocity = targetAngVel;
+                        clampAngVel(rbA->AngularVelocity);
                     }
                     else
                     {
@@ -2363,6 +2434,7 @@ namespace RL
                         trB->Position = Sub(trB->Position, Mul(posError, wB));
                         trB->Rotation = Sub(trB->Rotation, Mul(rotError, wB));
                         rbB->LinearVelocity = Sub(rbB->LinearVelocity, Mul(linImpulse, invMassB));
+                        clampAngVel(rbB->AngularVelocity);
                     }
                 }
             }

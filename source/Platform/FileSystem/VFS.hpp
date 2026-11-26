@@ -51,7 +51,8 @@ namespace RL
             const auto normBase = std::filesystem::weakly_canonical(base, ec);
             if (ec) return false;
             const auto rel = normCandidate.lexically_relative(normBase);
-            if (rel.empty() || rel == ".") return true;
+            if (rel.empty()) return false;
+            if (rel == ".") return true;
             const std::string relStr = rel.string();
             return !relStr.starts_with("..") && !rel.is_absolute();
         }

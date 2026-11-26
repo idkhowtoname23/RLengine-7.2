@@ -24,6 +24,7 @@ namespace RL
         DirectX::XMFLOAT4X4 WorldViewProj;
         DirectX::XMFLOAT4X4 World;
         DirectX::XMFLOAT4X4 LightViewProj;
+        DirectX::XMFLOAT4X4 PointLightViewProj;
         DirectX::XMFLOAT4 ObjectColor;
         DirectX::XMFLOAT4 LightDir;
         DirectX::XMFLOAT4 LightColor;
@@ -38,6 +39,7 @@ namespace RL
         DirectX::XMFLOAT4 MaterialParams;
         DirectX::XMFLOAT4 PostProcessParams;
         DirectX::XMFLOAT4 ViewportParams;
+        DirectX::XMFLOAT4 PointShadowParams;
     };
 
     namespace
@@ -289,6 +291,8 @@ namespace RL
 
         m_meshCache.clear();
         m_emitterStates.clear();
+        m_activeEmitterScratch.clear();
+        m_particleVertexScratch.clear();
         m_textureCache.clear();
         m_fallbackSRV.Reset();
         m_fallbackTexture.Reset();
@@ -298,6 +302,9 @@ namespace RL
 
         m_shadowVS.Reset();
         m_shadowSampler.Reset();
+        m_pointShadowSRV.Reset();
+        m_pointShadowDSV.Reset();
+        m_pointShadowTex.Reset();
         m_shadowSRV.Reset();
         m_shadowDSV.Reset();
         m_shadowTexture.Reset();
@@ -689,6 +696,35 @@ namespace RL
             return std::unexpected(std::format("Failed to create DX11 shadow sampler: 0x{:08X}", static_cast<u32>(hr)));
         }
 
+        D3D11_TEXTURE2D_DESC pointShadowDesc{};
+        pointShadowDesc.Width = 1024;
+        pointShadowDesc.Height = 1024;
+        pointShadowDesc.MipLevels = 1;
+        pointShadowDesc.ArraySize = 1;
+        pointShadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        pointShadowDesc.SampleDesc.Count = 1;
+        pointShadowDesc.SampleDesc.Quality = 0;
+        pointShadowDesc.Usage = D3D11_USAGE_DEFAULT;
+        pointShadowDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+
+        hr = m_device->CreateTexture2D(&pointShadowDesc, nullptr, &m_pointShadowTex);
+        if (FAILED(hr))
+        {
+            return std::unexpected(std::format("Failed to create DX11 point shadow texture: 0x{:08X}", static_cast<u32>(hr)));
+        }
+
+        hr = m_device->CreateDepthStencilView(m_pointShadowTex.Get(), &dsvDesc, &m_pointShadowDSV);
+        if (FAILED(hr))
+        {
+            return std::unexpected(std::format("Failed to create DX11 point shadow DSV: 0x{:08X}", static_cast<u32>(hr)));
+        }
+
+        hr = m_device->CreateShaderResourceView(m_pointShadowTex.Get(), &srvDesc, &m_pointShadowSRV);
+        if (FAILED(hr))
+        {
+            return std::unexpected(std::format("Failed to create DX11 point shadow SRV: 0x{:08X}", static_cast<u32>(hr)));
+        }
+
         return {};
     }
 
@@ -972,13 +1008,14 @@ namespace RL
             return nullptr;
         }
 
-        const u32 requiredVerts = static_cast<u32>(cpuVerts.size());
-        if (!m_skinnedVertexBuffer || m_skinnedVertexCapacity < requiredVerts)
+        const u32 requiredBytes = static_cast<u32>(cpuVerts.size() * sizeof(DX11Vertex));
+        if (!m_skinnedVertexBuffer || m_skinnedVertexCapacity < requiredBytes)
         {
-            const u32 newCap = (std::max)(requiredVerts, (std::max)(m_skinnedVertexCapacity * 2u, 256u));
+            const u32 minBytes = static_cast<u32>(256u * sizeof(DX11Vertex));
+            const u32 newCapBytes = (std::max)(requiredBytes, (std::max)(m_skinnedVertexCapacity * 2u, minBytes));
             m_skinnedVertexBuffer.Reset();
             D3D11_BUFFER_DESC vbDesc{};
-            vbDesc.ByteWidth = static_cast<UINT>(static_cast<usize>(newCap) * sizeof(DX11Vertex));
+            vbDesc.ByteWidth = static_cast<UINT>(newCapBytes);
             vbDesc.Usage = D3D11_USAGE_DYNAMIC;
             vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -987,7 +1024,7 @@ namespace RL
                 m_skinnedVertexCapacity = 0;
                 return nullptr;
             }
-            m_skinnedVertexCapacity = newCap;
+            m_skinnedVertexCapacity = newCapBytes;
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -1023,13 +1060,14 @@ namespace RL
             return nullptr;
         }
 
-        const u32 requiredVerts = static_cast<u32>(cpuVerts.size());
-        if (!m_skinnedVertexBuffer || m_skinnedVertexCapacity < requiredVerts)
+        const u32 requiredBytes = static_cast<u32>(cpuVerts.size() * sizeof(DX11Vertex));
+        if (!m_skinnedVertexBuffer || m_skinnedVertexCapacity < requiredBytes)
         {
-            const u32 newCap = (std::max)(requiredVerts, (std::max)(m_skinnedVertexCapacity * 2u, 256u));
+            const u32 minBytes = static_cast<u32>(256u * sizeof(DX11Vertex));
+            const u32 newCapBytes = (std::max)(requiredBytes, (std::max)(m_skinnedVertexCapacity * 2u, minBytes));
             m_skinnedVertexBuffer.Reset();
             D3D11_BUFFER_DESC vbDesc{};
-            vbDesc.ByteWidth = static_cast<UINT>(static_cast<usize>(newCap) * sizeof(DX11Vertex));
+            vbDesc.ByteWidth = static_cast<UINT>(newCapBytes);
             vbDesc.Usage = D3D11_USAGE_DYNAMIC;
             vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1038,7 +1076,7 @@ namespace RL
                 m_skinnedVertexCapacity = 0;
                 return nullptr;
             }
-            m_skinnedVertexCapacity = newCap;
+            m_skinnedVertexCapacity = newCapBytes;
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -1120,6 +1158,7 @@ namespace RL
                 row_major float4x4 WorldViewProj;
                 row_major float4x4 World;
                 row_major float4x4 LightViewProj;
+                row_major float4x4 PointLightViewProj;
                 float4 ObjectColor;
                 float4 LightDir;
                 float4 LightColor;
@@ -1134,13 +1173,15 @@ namespace RL
                 float4 MaterialParams;
                 float4 PostProcessParams;
                 float4 ViewportParams;
+                float4 PointShadowParams;
             };
 
             Texture2D diffuseTexture : register(t0);
             SamplerState linearSampler : register(s0);
             Texture2D shadowMap : register(t1);
             SamplerComparisonState shadowSampler : register(s1);
-            Texture2D normalMap : register(t2);
+            Texture2D pointShadowMap : register(t2);
+            Texture2D normalMap : register(t3);
 
             struct VSIn
             {
@@ -1160,6 +1201,7 @@ namespace RL
                 float2 UV : TEXCOORD0;
                 float4 LightSpacePos : TEXCOORD1;
                 float3 WorldPos : TEXCOORD2;
+                float4 PointLightSpacePos : TEXCOORD3;
             };
 
             PSIn VSMain(VSIn input)
@@ -1173,6 +1215,7 @@ namespace RL
                 output.UV = input.UV;
                 output.LightSpacePos = mul(worldPos, LightViewProj);
                 output.WorldPos = worldPos.xyz;
+                output.PointLightSpacePos = mul(worldPos, PointLightViewProj);
                 return output;
             }
 
@@ -1205,6 +1248,38 @@ namespace RL
                     for (int y = -1; y <= 1; ++y)
                     {
                         shadow += shadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + float2(x, y) * texelSize, projCoords.z - bias);
+                    }
+                }
+                return shadow / 9.0f;
+            }
+
+            float CalculatePointShadow(float4 pointLightSpacePos)
+            {
+                if (PointShadowParams.x <= 0.5f)
+                {
+                    return 1.0f;
+                }
+                float3 projCoords = pointLightSpacePos.xyz / max(pointLightSpacePos.w, 0.0001f);
+                projCoords.x = projCoords.x * 0.5f + 0.5f;
+                projCoords.y = -projCoords.y * 0.5f + 0.5f;
+
+                if (projCoords.x < 0.0f || projCoords.x > 1.0f ||
+                    projCoords.y < 0.0f || projCoords.y > 1.0f ||
+                    projCoords.z < 0.0f || projCoords.z > 1.0f)
+                {
+                    return 1.0f;
+                }
+
+                float bias = 0.002f;
+                float shadow = 0.0f;
+                float texelSize = 1.0f / 1024.0f;
+                [unroll]
+                for (int x = -1; x <= 1; ++x)
+                {
+                    [unroll]
+                    for (int y = -1; y <= 1; ++y)
+                    {
+                        shadow += pointShadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + float2(x, y) * texelSize, projCoords.z - bias);
                     }
                 }
                 return shadow / 9.0f;
@@ -1278,6 +1353,7 @@ namespace RL
                 float3 L = normalize(-LightDir.xyz);
                 float NdotL = max(dot(N, L), 0.0f);
                 float shadowFactor = CalculateShadow(input.LightSpacePos);
+                float pointShadowFactor = CalculatePointShadow(input.PointLightSpacePos);
                 float ao = saturate(MaterialParams.z);
                 float3 lit = AmbientColor.rgb * ao + LightColor.rgb * NdotL * shadowFactor;
 
@@ -1290,7 +1366,8 @@ namespace RL
                         float3 L_pt = toPoint / max(dist, 0.0001f);
                         float NdotL_pt = max(dot(N, L_pt), 0.0f);
                         float att = pow(saturate(1.0f - (dist / PointLightPos.w)), 2.0f) / (1.0f + 0.1f * dist * dist);
-                        lit += PointLightColor.rgb * NdotL_pt * att;
+                        float ptShadow = (PointShadowParams.x > 0.5f && PointShadowParams.y < 1.5f) ? pointShadowFactor : 1.0f;
+                        lit += PointLightColor.rgb * NdotL_pt * att * ptShadow;
                     }
                 }
 
@@ -1307,7 +1384,8 @@ namespace RL
                         float spotFactor = saturate((theta - outerCos) / max(innerCos - outerCos, 0.001f));
                         float sAtt = pow(saturate(1.0f - (sDist / SpotLightPos.w)), 2.0f) / (1.0f + 0.1f * sDist * sDist);
                         float NdotL_spot = max(dot(N, L_spot), 0.0f);
-                        lit += SpotLightColor.rgb * NdotL_spot * sAtt * spotFactor;
+                        float spShadow = (PointShadowParams.x > 0.5f && PointShadowParams.y >= 1.5f) ? pointShadowFactor : 1.0f;
+                        lit += SpotLightColor.rgb * NdotL_spot * sAtt * spotFactor * spShadow;
                     }
                 }
 
@@ -1598,6 +1676,9 @@ namespace RL
         bool foundDir = false;
         bool foundPoint = false;
         bool foundSpot = false;
+        bool hasPointShadow = false;
+        f32 pointShadowType = 0.0f;
+        DirectX::XMMATRIX pointLightViewProj = DirectX::XMMatrixIdentity();
 
         const auto* lightPool = scene.GetPool<LightComponent>();
         if (lightPool)
@@ -1655,6 +1736,46 @@ namespace RL
                     };
                     foundSpot = true;
                 }
+
+                if (!hasPointShadow && lights[i].CastShadows && tr &&
+                    (lights[i].Type == LightType::Point || lights[i].Type == LightType::Spot))
+                {
+                    const DirectX::XMVECTOR eye = DirectX::XMVectorSet(tr->Position.x, tr->Position.y, tr->Position.z, 1.0f);
+                    DirectX::XMVECTOR at = DirectX::XMVectorZero();
+                    f32 fov = DirectX::XM_PIDIV2;
+
+                    if (lights[i].Type == LightType::Spot)
+                    {
+                        const auto rotMat = DirectX::XMMatrixRotationRollPitchYaw(tr->Rotation.x, tr->Rotation.y, tr->Rotation.z);
+                        const DirectX::XMVECTOR forward = DirectX::XMVector3Normalize(
+                            DirectX::XMVector3TransformNormal(DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rotMat));
+                        at = DirectX::XMVectorAdd(eye, forward);
+                        fov = DirectX::XMConvertToRadians(std::clamp(lights[i].SpotAngle, 10.0f, 170.0f));
+                        pointShadowType = 2.0f;
+                    }
+                    else
+                    {
+                        const f32 lenSq = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(eye));
+                        if (lenSq < 1e-4f)
+                        {
+                            at = DirectX::XMVectorSet(0.0f, -1.0f, 0.0f, 1.0f);
+                        }
+                        pointShadowType = 1.0f;
+                    }
+
+                    const DirectX::XMVECTOR dir = DirectX::XMVector3Normalize(DirectX::XMVectorSubtract(at, eye));
+                    DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+                    if (std::abs(DirectX::XMVectorGetY(dir)) > 0.99f)
+                    {
+                        up = DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+                    }
+
+                    const DirectX::XMMATRIX pView = DirectX::XMMatrixLookAtLH(eye, at, up);
+                    const DirectX::XMMATRIX pProj = DirectX::XMMatrixPerspectiveFovLH(
+                        fov, 1.0f, 0.25f, (std::max)(5.0f, lights[i].Range));
+                    pointLightViewProj = DirectX::XMMatrixMultiply(pView, pProj);
+                    hasPointShadow = true;
+                }
             }
         }
 
@@ -1685,14 +1806,23 @@ namespace RL
             1.0f / safeH
         };
 
+        const DirectX::XMFLOAT4 pointShadowParams{
+            (hasPointShadow && m_pointShadowSRV) ? 1.0f : 0.0f,
+            pointShadowType,
+            1.0f / 1024.0f,
+            0.0f
+        };
+
         auto writeCommonCB = [&](CBLayout* cb,
                                  const DirectX::XMMATRIX& wvp,
                                  const DirectX::XMMATRIX& world,
                                  const DirectX::XMFLOAT4& objectColor,
-                                 const DirectX::XMFLOAT4& materialParams) {
+                                 const DirectX::XMFLOAT4& materialParams,
+                                 const DirectX::XMMATRIX& activeLightViewProj) {
             DirectX::XMStoreFloat4x4(&cb->WorldViewProj, wvp);
             DirectX::XMStoreFloat4x4(&cb->World, world);
-            DirectX::XMStoreFloat4x4(&cb->LightViewProj, lightViewProj);
+            DirectX::XMStoreFloat4x4(&cb->LightViewProj, activeLightViewProj);
+            DirectX::XMStoreFloat4x4(&cb->PointLightViewProj, pointLightViewProj);
             cb->ObjectColor = objectColor;
             cb->LightDir = lightDir;
             cb->LightColor = lightColor;
@@ -1707,15 +1837,18 @@ namespace RL
             cb->MaterialParams = materialParams;
             cb->PostProcessParams = postProcessParams;
             cb->ViewportParams = viewportParams;
+            cb->PointShadowParams = pointShadowParams;
         };
 
-        if (m_shadowDSV && m_shadowVS && (meshPool || skinnedPool))
-        {
+        auto renderShadowPass = [&](ID3D11DepthStencilView* targetDSV,
+                                    f32 shadowRes,
+                                    u32 srvSlotToUnbind,
+                                    const DirectX::XMMATRIX& passViewProj) {
             ID3D11ShaderResourceView* nullSRV = nullptr;
-            m_context->PSSetShaderResources(1, 1, &nullSRV);
+            m_context->PSSetShaderResources(srvSlotToUnbind, 1, &nullSRV);
 
-            m_context->OMSetRenderTargets(0, nullptr, m_shadowDSV.Get());
-            m_context->ClearDepthStencilView(m_shadowDSV.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+            m_context->OMSetRenderTargets(0, nullptr, targetDSV);
+            m_context->ClearDepthStencilView(targetDSV, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
             if (m_depthState)
             {
@@ -1727,8 +1860,8 @@ namespace RL
             }
 
             D3D11_VIEWPORT shadowVp{};
-            shadowVp.Width = 2048.0f;
-            shadowVp.Height = 2048.0f;
+            shadowVp.Width = shadowRes;
+            shadowVp.Height = shadowRes;
             shadowVp.MinDepth = 0.0f;
             shadowVp.MaxDepth = 1.0f;
             shadowVp.TopLeftX = 0.0f;
@@ -1796,10 +1929,11 @@ namespace RL
                     {
                         writeCommonCB(
                             static_cast<CBLayout*>(mapped.pData),
-                            DirectX::XMMatrixMultiply(world, lightViewProj),
+                            DirectX::XMMatrixMultiply(world, passViewProj),
                             world,
                             shadowMeshes[i].Color,
-                            { 0.0f, 0.5f, 1.0f, 0.0f }
+                            { 0.0f, 0.5f, 1.0f, 0.0f },
+                            passViewProj
                         );
                         m_context->Unmap(m_constantBuffer.Get(), 0);
                     }
@@ -1846,10 +1980,11 @@ namespace RL
                     {
                         writeCommonCB(
                             static_cast<CBLayout*>(mapped.pData),
-                            DirectX::XMMatrixMultiply(world, lightViewProj),
+                            DirectX::XMMatrixMultiply(world, passViewProj),
                             world,
                             DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f },
-                            { 0.0f, 0.5f, 1.0f, 0.0f }
+                            { 0.0f, 0.5f, 1.0f, 0.0f },
+                            passViewProj
                         );
                         m_context->Unmap(m_constantBuffer.Get(), 0);
                     }
@@ -1857,6 +1992,16 @@ namespace RL
                     m_context->DrawIndexed(meshBuf->indexCount, 0, 0);
                 }
             }
+        };
+
+        if (m_shadowDSV && m_shadowVS && (meshPool || skinnedPool))
+        {
+            renderShadowPass(m_shadowDSV.Get(), 2048.0f, 1, lightViewProj);
+        }
+
+        if (hasPointShadow && m_pointShadowDSV && m_shadowVS && (meshPool || skinnedPool))
+        {
+            renderShadowPass(m_pointShadowDSV.Get(), 1024.0f, 2, pointLightViewProj);
         }
 
         ID3D11RenderTargetView* rtvs[] = { m_rtv.Get() };
@@ -1893,7 +2038,8 @@ namespace RL
                     gridWvp,
                     identity,
                     DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f },
-                    DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 0.0f }
+                    DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 0.0f },
+                    lightViewProj
                 );
                 m_context->Unmap(m_constantBuffer.Get(), 0);
             }
@@ -1932,6 +2078,12 @@ namespace RL
         {
             ID3D11ShaderResourceView* shadowSrvs[] = { m_shadowSRV.Get() };
             m_context->PSSetShaderResources(1, 1, shadowSrvs);
+        }
+
+        if (m_pointShadowSRV)
+        {
+            ID3D11ShaderResourceView* pointShadowSrvs[] = { m_pointShadowSRV.Get() };
+            m_context->PSSetShaderResources(2, 1, pointShadowSrvs);
         }
 
         const UINT stride = sizeof(DX11Vertex);
@@ -2031,7 +2183,7 @@ namespace RL
                     }
                 }
                 m_context->PSSetShaderResources(0, 1, &texSrv);
-                m_context->PSSetShaderResources(2, 1, &normSrv);
+                m_context->PSSetShaderResources(3, 1, &normSrv);
 
                 DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
                 DirectX::XMMATRIX wvp = world * viewProj;
@@ -2039,7 +2191,7 @@ namespace RL
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
                 {
-                    writeCommonCB(static_cast<CBLayout*>(mapped.pData), wvp, world, objColor, matParams);
+                    writeCommonCB(static_cast<CBLayout*>(mapped.pData), wvp, world, objColor, matParams, lightViewProj);
                     m_context->Unmap(m_constantBuffer.Get(), 0);
                 }
 
@@ -2128,7 +2280,7 @@ namespace RL
                     }
                 }
                 m_context->PSSetShaderResources(0, 1, &texSrv);
-                m_context->PSSetShaderResources(2, 1, &normSrv);
+                m_context->PSSetShaderResources(3, 1, &normSrv);
 
                 DirectX::XMMATRIX world = scene.GetWorldMatrix(entity);
                 DirectX::XMMATRIX wvp = world * viewProj;
@@ -2136,7 +2288,7 @@ namespace RL
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 if (SUCCEEDED(m_context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
                 {
-                    writeCommonCB(static_cast<CBLayout*>(mapped.pData), wvp, world, objColor, matParams);
+                    writeCommonCB(static_cast<CBLayout*>(mapped.pData), wvp, world, objColor, matParams, lightViewProj);
                     m_context->Unmap(m_constantBuffer.Get(), 0);
                 }
 
@@ -2172,7 +2324,7 @@ namespace RL
                 m_context->IASetIndexBuffer(quadBuf.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
 
                 ID3D11ShaderResourceView* normSrv = m_fallbackNormalSRV.Get();
-                m_context->PSSetShaderResources(2, 1, &normSrv);
+                m_context->PSSetShaderResources(3, 1, &normSrv);
 
                 const auto quadEntities = quadPool->GetEntities();
                 const auto quads = quadPool->GetData();
@@ -2197,7 +2349,8 @@ namespace RL
                             wvp,
                             world,
                             quads[i].Color,
-                            DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 1.0f }
+                            DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 1.0f },
+                            lightViewProj
                         );
                         m_context->Unmap(m_constantBuffer.Get(), 0);
                     }
@@ -2217,8 +2370,11 @@ namespace RL
         {
             const auto emitterEntities = particlePool->GetEntities();
             const auto emitters = particlePool->GetData();
-            std::vector<u64> activeEmitterIds;
-            activeEmitterIds.reserve(emitters.size());
+            m_activeEmitterScratch.clear();
+            if (m_activeEmitterScratch.capacity() < emitters.size())
+            {
+                m_activeEmitterScratch.reserve(emitters.size());
+            }
 
             std::uniform_real_distribution<f32> distSigned(-1.0f, 1.0f);
 
@@ -2228,7 +2384,7 @@ namespace RL
                 if (!scene.IsValid(entity)) continue;
 
                 const u64 entityId = entity.GetID();
-                activeEmitterIds.push_back(entityId);
+                m_activeEmitterScratch.push_back(entityId);
 
                 const ParticleEmitterComponent& emitter = emitters[i];
                 DX11EmitterState& state = m_emitterStates[entityId];
@@ -2305,7 +2461,7 @@ namespace RL
 
             for (auto it = m_emitterStates.begin(); it != m_emitterStates.end();)
             {
-                if (std::find(activeEmitterIds.begin(), activeEmitterIds.end(), it->first) == activeEmitterIds.end())
+                if (std::find(m_activeEmitterScratch.begin(), m_activeEmitterScratch.end(), it->first) == m_activeEmitterScratch.end())
                 {
                     it = m_emitterStates.erase(it);
                 }
@@ -2366,7 +2522,7 @@ namespace RL
                         ID3D11ShaderResourceView* texSrv = m_fallbackSRV.Get();
                         ID3D11ShaderResourceView* normSrv = m_fallbackNormalSRV.Get();
                         m_context->PSSetShaderResources(0, 1, &texSrv);
-                        m_context->PSSetShaderResources(2, 1, &normSrv);
+                        m_context->PSSetShaderResources(3, 1, &normSrv);
                         boundParticlePipeline = true;
                     }
 
@@ -2399,7 +2555,8 @@ namespace RL
                                 wvp,
                                 billboardWorld,
                                 color,
-                                DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 1.0f }
+                                DirectX::XMFLOAT4{ 0.0f, 0.5f, 1.0f, 1.0f },
+                                lightViewProj
                             );
                             m_context->Unmap(m_constantBuffer.Get(), 0);
                         }
@@ -2425,7 +2582,7 @@ namespace RL
             m_context->RSSetState(m_rasterState.Get());
         }
 
-        ID3D11ShaderResourceView* nullSRVs[3] = { nullptr, nullptr, nullptr };
-        m_context->PSSetShaderResources(0, 3, nullSRVs);
+        ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
+        m_context->PSSetShaderResources(0, 4, nullSRVs);
     }
 }

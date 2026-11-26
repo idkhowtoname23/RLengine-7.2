@@ -65,6 +65,7 @@ namespace RL
         static int Entity_SetAnimationTime(lua_State* L);
         static int Entity_GetAnimationTime(lua_State* L);
         static int Entity_IsAnimationPlaying(lua_State* L);
+        static int Entity_SetIKTarget(lua_State* L);
         static int Entity_IsValid(lua_State* L);
         static int Entity_GetID(lua_State* L);
         static int Entity_GetIndex(lua_State* L);

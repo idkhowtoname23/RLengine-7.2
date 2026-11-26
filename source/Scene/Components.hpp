@@ -234,6 +234,12 @@ namespace RL
         bool Loop = true;
         bool IsPlaying = true;
         bool IsVisible = true;
+        bool EnableIK = false;
+        u32 IKRootBone = 0;
+        u32 IKMidBone = 1;
+        u32 IKEndBone = 2;
+        DirectX::XMFLOAT3 IKTargetPos{ 0.0f, 0.0f, 0.0f };
+        f32 IKWeight = 1.0f;
         std::vector<DirectX::XMFLOAT4X4> BonePalette;
 
         void Play(std::string_view animName)
