@@ -1,0 +1,57 @@
+name: RLengine 7.2 CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-verify:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (MSVC x64)
+        run: cmake -B build -A x64
+
+      - name: Build Release configuration
+        run: cmake --build build --config Release --parallel
+
+      - name: Verify Release artifacts and runtime DLLs
+        shell: pwsh
+        run: |
+          $required = @(
+            "build/bin/Release/RLengine7.2.exe",
+            "build/bin/Release/dxcompiler.dll",
+            "build/bin/Release/dxil.dll",
+            "build/bin/Release/shaders/mesh3d.hlsl",
+            "build/bin/Release/shaders/postprocess.hlsl"
+          )
+          foreach ($f in $required) {
+            if (-not (Test-Path $f)) {
+              Write-Error "Missing required build artifact: $f"
+              exit 1
+            }
+          }
+
+      - name: Enforce Strict Zero Comments Policy
+        shell: pwsh
+        run: |
+          $hits = Get-ChildItem -Path "source","shaders" -Recurse -Include *.cpp,*.hpp,*.h,*.hlsl,*.lua | Select-String -Pattern "(?<!:)//|/\*|\*/"
+          if ($hits.Count -gt 0) {
+            $hits | Format-Table -AutoSize
+            Write-Error "Zero Comments Policy violated ($($hits.Count) matches found)."
+            exit 1
+          }
+          Write-Host "Zero Comments Policy verified: 0 comment matches."
+
+      - name: Upload Release build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RLengine-7.2-Windows-x64
+          path: build/bin/Release/
+          retention-days: 14

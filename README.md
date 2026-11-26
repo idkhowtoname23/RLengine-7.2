@@ -118,6 +118,16 @@ cmake --build build --config Release --parallel
 .\build\bin\Release\RLengine7.2.exe --smoke-test --dx11
 ```
 
+### 📊 Verified Performance Benchmarks (RTX 5060, 1600x900, DX12, VSync OFF)
+
+| Entities | Average FPS | Average Frame Time | Command |
+| ---: | ---: | ---: | :--- |
+| **50,001** | **506.86 FPS** | **1.973 ms** | `--stress-test 50000 --smoke-test 120` |
+| **100,001** | **325.46 FPS** | **3.073 ms** | `--stress-test 100000 --smoke-test 120` |
+| **1,000,001** | **46.80 FPS** | **21.367 ms** | `--stress-test 1000000 --smoke-test 30` |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for full details.
+
 ---
 
 ## 📦 Pre-Release Archive Contents

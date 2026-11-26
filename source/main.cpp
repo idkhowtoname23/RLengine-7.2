@@ -983,7 +983,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             }
             dx11.EndFrame();
 
-            const bool vsync = playMode ? true : editorLayer.GetSceneBuilder().IsVSyncEnabled();
+            const bool vsync = (smokeTest && stressTestMode) ? false : (playMode ? true : editorLayer.GetSceneBuilder().IsVSyncEnabled());
             dx11.Present(vsync);
 
             if (smokeTest && timer.GetFrameCount() >= maxTestFrames)
@@ -1205,7 +1205,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
     StressTest stressTest;
     LuaEntityBridge::SetStressTest(&stressTest);
-    if (stressTestMode)
+    if (stressTestMode && !smokeTest)
     {
         editorLayer.GetSceneBuilder().SetVSyncEnabled(false);
         scene.GetCamera().SetProjectionType(CameraProjection::Perspective);
@@ -1712,19 +1712,22 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
             scene.Clear();
         }
 
-        scene.GetCamera().SetProjectionType(CameraProjection::Perspective);
-        Entity cubeEnt = scene.CreateEntity("Cube");
-        scene.AddComponent<MeshComponent>(cubeEnt, "Cube");
+        if (!stressTestMode)
+        {
+            scene.GetCamera().SetProjectionType(CameraProjection::Perspective);
+            Entity cubeEnt = scene.CreateEntity("Cube");
+            scene.AddComponent<MeshComponent>(cubeEnt, "Cube");
 
-        Entity spotEnt = scene.CreateEntity("SmokeSpotLight");
-        auto& spotTr = scene.GetComponent<TransformComponent>(spotEnt);
-        spotTr.Position = { 2.0f, 4.0f, -2.0f };
-        spotTr.Rotation = { 0.6f, 0.0f, 0.0f };
-        auto& spotLc = scene.AddComponent<LightComponent>(spotEnt);
-        spotLc.Type = LightType::Spot;
-        spotLc.SpotAngle = 35.0f;
-        spotLc.Intensity = 6.0f;
-        spotLc.Range = 25.0f;
+            Entity spotEnt = scene.CreateEntity("SmokeSpotLight");
+            auto& spotTr = scene.GetComponent<TransformComponent>(spotEnt);
+            spotTr.Position = { 2.0f, 4.0f, -2.0f };
+            spotTr.Rotation = { 0.6f, 0.0f, 0.0f };
+            auto& spotLc = scene.AddComponent<LightComponent>(spotEnt);
+            spotLc.Type = LightType::Spot;
+            spotLc.SpotAngle = 35.0f;
+            spotLc.Intensity = 6.0f;
+            spotLc.Range = 25.0f;
+        }
 
         if (!scriptEngine.ExecuteString(
                 "local s = RL.Scene.CreateEntity('LuaAnimTest')\n"
@@ -1742,6 +1745,17 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         const bool luaAnimOk = lua_toboolean(animL, -1) != 0;
         lua_pop(animL, 1);
         if (!luaAnimOk) return -98;
+    }
+
+    if (stressTestMode && smokeTest)
+    {
+        editorLayer.GetSceneBuilder().SetVSyncEnabled(false);
+        scene.GetCamera().SetProjectionType(CameraProjection::Perspective);
+        scene.GetCamera().SetPosition({ 0.0f, 0.0f, -30.0f });
+        scene.GetCamera().SetRotation({ 0.0f, 0.0f, 0.0f });
+        scene.GetCamera().SetFOV(DirectX::XMConvertToRadians(45.0f));
+        scene.GetCamera().SetAspectRatio(window.GetAspectRatio());
+        stressTest.Spawn(scene, stressEntityCount);
     }
 
     if (playMode)
@@ -1762,10 +1776,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     timer.Reset();
 
     f32 titleUpdateTimer = 0.0f;
+    f64 totalBenchMs = 0.0;
+    f64 lastBenchMs = 0.0;
+    u32 benchSampleCount = 0;
     RL_LOG_INFO("All subsystems initialized successfully. Entering engine main loop...");
 
     while (true)
     {
+        const auto frameWallStart = std::chrono::high_resolution_clock::now();
         Input::NewFrame();
         if (Input::IsKeyPressed(KeyCode::F5))
         {
@@ -1854,29 +1872,44 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 
         device.EndFrame();
 
-        const bool vsync = playMode ? true : editorLayer.GetSceneBuilder().IsVSyncEnabled();
+        const bool vsync = (smokeTest && stressTestMode) ? false : (playMode ? true : editorLayer.GetSceneBuilder().IsVSyncEnabled());
         device.Present(vsync);
+
+        const auto frameWallEnd = std::chrono::high_resolution_clock::now();
+        lastBenchMs = std::chrono::duration<f64, std::milli>(frameWallEnd - frameWallStart).count();
+        if (timer.GetFrameCount() > 3)
+        {
+            totalBenchMs += lastBenchMs;
+            ++benchSampleCount;
+        }
 
         if (smokeTest && timer.GetFrameCount() >= maxTestFrames)
         {
             const usize originalCount = scene.GetAliveEntityCount();
-            const std::string jsonPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.json").string();
-            const std::string binPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.bin").string();
-            SceneSerializer::Save(scene, jsonPath);
-            SceneSerializer::Save(scene, binPath);
-            Scene jsonScene;
-            SceneSerializer::Load(jsonScene, device.GetDevice(), jsonPath);
-            Scene binScene;
-            SceneSerializer::Load(binScene, device.GetDevice(), binPath);
-            std::error_code ec;
-            std::filesystem::remove(jsonPath, ec);
-            std::filesystem::remove(binPath, ec);
-            if (jsonScene.GetAliveEntityCount() != originalCount || binScene.GetAliveEntityCount() != originalCount)
+            if (!stressTestMode)
             {
-                RL_LOG_FATAL("Smoke test entity count mismatch: original {}, json {}, bin {}",
-                    originalCount, jsonScene.GetAliveEntityCount(), binScene.GetAliveEntityCount());
-                return -12;
+                const std::string jsonPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.json").string();
+                const std::string binPath = (std::filesystem::temp_directory_path() / "rlengine_smoke_test.bin").string();
+                SceneSerializer::Save(scene, jsonPath);
+                SceneSerializer::Save(scene, binPath);
+                Scene jsonScene;
+                SceneSerializer::Load(jsonScene, device.GetDevice(), jsonPath);
+                Scene binScene;
+                SceneSerializer::Load(binScene, device.GetDevice(), binPath);
+                std::error_code ec;
+                std::filesystem::remove(jsonPath, ec);
+                std::filesystem::remove(binPath, ec);
+                if (jsonScene.GetAliveEntityCount() != originalCount || binScene.GetAliveEntityCount() != originalCount)
+                {
+                    RL_LOG_FATAL("Smoke test entity count mismatch: original {}, json {}, bin {}",
+                        originalCount, jsonScene.GetAliveEntityCount(), binScene.GetAliveEntityCount());
+                    return -12;
+                }
             }
+            const f64 avgMs = benchSampleCount > 0 ? (totalBenchMs / static_cast<f64>(benchSampleCount)) : lastBenchMs;
+            const f64 avgFps = avgMs > 0.0001 ? (1000.0 / avgMs) : 0.0;
+            RL_LOG_INFO("Benchmark Summary: Entities={}, Rendered={}, Frames={}, AvgFPS={:.2f}, AvgFrameTime={:.3f} ms, LastFrameTime={:.3f} ms",
+                originalCount, renderSystem.GetLastRenderedCount(), timer.GetFrameCount(), avgFps, avgMs, lastBenchMs);
             RL_LOG_INFO("Smoke test completed successfully ({} frames rendered, JSON & Binary scene serialization verified, entity count verified: {}, rendered count: {}).",
                 timer.GetFrameCount(), originalCount, renderSystem.GetLastRenderedCount());
             break;
