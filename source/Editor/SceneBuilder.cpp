@@ -2736,22 +2736,37 @@ namespace RL
 
         if (viewportHovered && std::abs(io.MouseWheel) > 0.0f)
         {
+            XMFLOAT3 right, up, fwd;
+            ComputeBasis(cam.GetRotation(), right, up, fwd);
+
             if (cam.GetProjectionType() == CameraProjection::Perspective)
             {
-                XMFLOAT3 right, up, fwd;
-                ComputeBasis(cam.GetRotation(), right, up, fwd);
-                const float step = io.MouseWheel * (std::max)(0.5f, m_orbitDistance * 0.12f);
+                const float step = io.MouseWheel * (std::max)(0.5f, m_orbitDistance * 0.14f);
                 XMFLOAT3 pos = cam.GetPosition();
                 pos.x += fwd.x * step;
                 pos.y += fwd.y * step;
                 pos.z += fwd.z * step;
                 cam.SetPosition(pos);
-                m_orbitDistance = std::clamp(m_orbitDistance - step, 0.5f, 500.0f);
+                m_orbitDistance = std::clamp(m_orbitDistance - step, 0.25f, 5000.0f);
+                cam.SetFarZ((std::max)(1000.0f, m_orbitDistance * 4.0f));
             }
             else
             {
-                const float newZoom = cam.GetZoom() * std::pow(1.15f, io.MouseWheel);
-                cam.SetZoom(std::clamp(newZoom, 0.05f, 50.0f));
+                const float newZoom = std::clamp(cam.GetZoom() * std::pow(1.15f, io.MouseWheel), 0.0005f, 200.0f);
+                const XMFLOAT3 oldPos = cam.GetPosition();
+                const XMFLOAT3 pivot{
+                    oldPos.x + fwd.x * m_orbitDistance,
+                    oldPos.y + fwd.y * m_orbitDistance,
+                    oldPos.z + fwd.z * m_orbitDistance
+                };
+                const float newDist = std::clamp(2.0f / newZoom, 2.0f, 2000.0f);
+                cam.SetZoom(newZoom);
+                cam.SetPosition(XMFLOAT3(
+                    pivot.x - fwd.x * newDist,
+                    pivot.y - fwd.y * newDist,
+                    pivot.z - fwd.z * newDist));
+                m_orbitDistance = newDist;
+                cam.SetFarZ((std::max)(1000.0f, newDist * 4.0f));
             }
         }
 
